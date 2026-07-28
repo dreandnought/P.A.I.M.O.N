@@ -1,13 +1,13 @@
 """
 LLM 驱动的 PRD/文档解析器。
 
-职责：
+职责:
 1. 从文本/Markdown 中抽取实体和关系
 2. 将实体与预设 Ontology 进行语义匹配
 3. 根据自然语言描述生成本体变更计划
-4. 生成增强版 PRD（四阶段流水线：抽取 → 匹配+图搜索 → 推理 → 融合）
+4. 生成增强版 PRD(四阶段流水线:抽取 → 匹配+图搜索 → 推理 → 融合)
 
-注意：当前为验证阶段，不引入向量模型，使用纯 LLM 语义匹配。
+注意:当前为验证阶段,不引入向量模型,使用纯 LLM 语义匹配。
 """
 
 import json
@@ -24,7 +24,7 @@ _CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "llm_con
 
 
 def _load_llm_config():
-    """加载 llm_config.yaml 配置（每次调用都重新读取，支持热更新）。"""
+    """加载 llm_config.yaml 配置(每次调用都重新读取,支持热更新)。"""
     if os.path.exists(_CONFIG_PATH):
         with open(_CONFIG_PATH, encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
@@ -42,7 +42,7 @@ def _load_llm_config():
 
 
 def _chat_url(base_url: str) -> str:
-    """根据 base_url 构造 chat completions URL，保留用户指定的显式路径。"""
+    """根据 base_url 构造 chat completions URL,保留用户指定的显式路径。"""
     if not base_url:
         return base_url
     from urllib.parse import urlparse
@@ -54,7 +54,7 @@ def _chat_url(base_url: str) -> str:
 
 
 def _call_llm(system_prompt: str, user_prompt: str, temperature: Optional[float] = None, max_tokens: Optional[int] = None) -> Optional[str]:
-    """调用 LLM API（每次调用都重新读取配置）。"""
+    """调用 LLM API(每次调用都重新读取配置)。"""
     import requests
 
     cfg = _load_llm_config()
@@ -96,8 +96,13 @@ def _call_llm(system_prompt: str, user_prompt: str, temperature: Optional[float]
         raise RuntimeError(f"LLM API call failed: {e}")
 
 
-def _build_ontology_context(db_path=None) -> str:
-    """构建 Ontology 上下文字符串（供 LLM 匹配使用）。"""
+def _build_ontology_context(db_path=None, include_schema=False) -> str:
+    """构建 Ontology 上下文字符串(供 LLM 匹配使用)。
+
+    Args:
+        db_path: 数据库路径
+        include_schema: 是否包含 Schema 层信息（类型层次、关系语义）
+    """
     from models.schema import get_connection
 
     conn = get_connection(db_path)
@@ -110,13 +115,52 @@ def _build_ontology_context(db_path=None) -> str:
     conn.close()
 
     if not rows:
-        return "（当前 Ontology 中暂无实体）"
+        return "(当前 Ontology 中暂无实体)"
 
     lines = []
     for r in rows:
         desc = r["description"] or ""
         lines.append(f"- {r['id']} | {r['name']} ({r['type_name']}) | {desc[:80]}")
-    return "\n".join(lines)
+
+    entity_text = "\n".join(lines)
+
+    if include_schema:
+        # 追加 Schema 层信息
+        schema_lines = ["\n### Schema 层信息"]
+
+        # 实体类型层次
+        et_rows = conn.execute(
+            """SELECT et.id, et.name, et.description, et.parent_id,
+                      (SELECT name FROM entity_types WHERE id = et.parent_id) AS parent_name
+               FROM entity_types et ORDER BY et.id"""
+        ).fetchall()
+        schema_lines.append("\n实体类型层次:")
+        for r in et_rows:
+            parent_str = f" → {r['parent_name']}" if r['parent_name'] else " (根)"
+            schema_lines.append(f"- {r['id']} | {r['name']}{parent_str}")
+
+        # 关系类型语义
+        rt_rows = conn.execute(
+            """SELECT id, name, symmetric, transitive, domain_type, range_type
+               FROM relation_types ORDER BY id"""
+        ).fetchall()
+        schema_lines.append("\n关系类型语义:")
+        for r in rt_rows:
+            props = []
+            if r['symmetric']:
+                props.append("对称")
+            if r['transitive']:
+                props.append("传递")
+            if r['domain_type']:
+                props.append(f"domain={r['domain_type']}")
+            if r['range_type']:
+                props.append(f"range={r['range_type']}")
+            prop_str = f" ({', '.join(props)})" if props else ""
+            schema_lines.append(f"- {r['id']}{prop_str}")
+
+        return entity_text + "\n" + "\n".join(schema_lines)
+
+    return entity_text
 
 
 def _extract_json_blocks(text: str) -> list:
@@ -132,7 +176,7 @@ def _first_json_block(text: str):
             return json.loads(blocks[0])
         except json.JSONDecodeError:
             pass
-    # 兜底：尝试直接解析整个文本中的 JSON
+    # 兜底:尝试直接解析整个文本中的 JSON
     try:
         return json.loads(text.strip())
     except json.JSONDecodeError:
@@ -140,9 +184,9 @@ def _first_json_block(text: str):
 
 
 def extract_entities_and_relations(content: str, db_path=None) -> dict:
-    """从文本/Markdown 中抽取实体和关系，并尝试与已有 Ontology 实体匹配。
+    """从文本/Markdown 中抽取实体和关系,并尝试与已有 Ontology 实体匹配。
 
-    返回结构：
+    返回结构:
     {
         "entities": [
             {
@@ -168,11 +212,11 @@ def extract_entities_and_relations(content: str, db_path=None) -> dict:
         ]
     }
     """
-    ontology_context = _build_ontology_context(db_path)
+    ontology_context = _build_ontology_context(db_path, include_schema=True)
 
-    system_prompt = """你是一个本体知识抽取专家。你的任务是从用户提供的文本或 Markdown 文档中抽取功能级实体和它们之间的关系，并与已有 Ontology 进行匹配。
+    system_prompt = """你是一个本体知识抽取专家。你的任务是从用户提供的文本或 Markdown 文档中抽取功能级实体和它们之间的关系,并与已有 Ontology 进行匹配。
 
-请严格按以下 JSON 格式返回结果（只返回一个 JSON 代码块，不要额外解释）：
+请严格按以下 JSON 格式返回结果(只返回一个 JSON 代码块,不要额外解释):
 
 ```json
 {
@@ -197,17 +241,35 @@ def extract_entities_and_relations(content: str, db_path=None) -> dict:
       "description": "登录需要短信验证码",
       "confidence": 0.9
     }
-  ]
+  ],
+  "schema": {
+    "entity_types": {
+      "create": [],
+      "update": []
+    },
+    "relation_types": {
+      "create": [],
+      "update": []
+    }
+  }
 }
 ```
 
-规则：
-1. 实体类型仅限：requirement、function、module、interface、data_entity、test_case、constraint、actor。
-2. suggested_id 规范：使用"类型前缀:英文小写slug"，例如 function→func:xxx、module→mod:xxx、interface→iface:xxx、data_entity→data:xxx、actor→actor:xxx、requirement→req:xxx、constraint→constraint:xxx、test_case→test:xxx。
-3. 若某实体与"当前 Ontology 中的已知实体"明显是同一个，则填写 matched_entity_id 为已有实体的 id，is_new=false，confidence 为 0.5-1.0；否则 matched_entity_id 为 null，is_new=true。
-4. relation_type 仅限：depends_on、causes、constrains、impacts、conflicts_with、derived_from、implements、contains、refines、relates_to。
-5. 关系两端的 source_id/target_id 优先使用已有实体的 ID；若目标为新实体，则使用 suggested_id。
-6. 只抽取文本中明确提到、有较高置信度的实体和关系，不要过度推断。"""
+规则:
+1. 实体类型仅限:requirement、function、module、interface、data_entity、test_case、constraint、actor。
+2. suggested_id 规范:使用"类型前缀:英文小写slug",例如 function→func:xxx、module→mod:xxx、interface→iface:xxx、data_entity→data:xxx、actor→actor:xxx、requirement→req:xxx、constraint→constraint:xxx、test_case→test:xxx。
+3. 若某实体与"当前 Ontology 中的已知实体"明显是同一个,则填写 matched_entity_id 为已有实体的 id,is_new=false,confidence 为 0.5-1.0;否则 matched_entity_id 为 null,is_new=true。
+4. relation_type 仅限:depends_on、causes、constrains、impacts、conflicts_with、derived_from、implements、contains、refines、relates_to。
+5. 关系两端的 source_id/target_id 优先使用已有实体的 ID;若目标为新实体,则使用 suggested_id。
+6. 只抽取文本中明确提到、有较高置信度的实体和关系,不要过度推断。
+
+7. [可选] Schema 分析:如果在文档中发现了现有类型无法覆盖的概念,或者发现现有关系语义需要调整,
+   请在 schema 字段中提出变更建议。只在有把握时才写,不确定的不写。
+   - entity_types.create: 新增实体类型(需要 id, name, description, parent_id)
+   - entity_types.update: 修改现有实体类型(需要 id, parent_id 等)
+   - relation_types.create: 新增关系类型(需要 id, name, symmetric, transitive, domain_type, range_type)
+   - relation_types.update: 修改现有关系类型(需要 id, 和要修改的字段)
+   如果不需要 Schema 变更,返回空对象。"""
 
     user_prompt = f"""## 当前 Ontology 中的已知实体
 {ontology_context}
@@ -215,13 +277,13 @@ def extract_entities_and_relations(content: str, db_path=None) -> dict:
 ## 待分析的文本/文档
 {content}
 
-请抽取实体和关系，并返回严格 JSON。"""
+请抽取实体和关系,并返回严格 JSON。如有 Schema 变更建议请填入 schema 字段。"""
 
     llm_response = _call_llm(system_prompt, user_prompt, temperature=0.1, max_tokens=4096)
     parsed = _first_json_block(llm_response)
 
     if not isinstance(parsed, dict):
-        raise RuntimeError("LLM 返回的 JSON 格式不正确，无法解析实体和关系")
+        raise RuntimeError("LLM 返回的 JSON 格式不正确,无法解析实体和关系")
 
     entities = parsed.get("entities", []) if isinstance(parsed.get("entities"), list) else []
     relations = parsed.get("relations", []) if isinstance(parsed.get("relations"), list) else []
@@ -263,9 +325,26 @@ def extract_entities_and_relations(content: str, db_path=None) -> dict:
             "confidence": float(r.get("confidence", 0.8)),
         })
 
+    # 提取 schema 变更部分（LLM 可能返回 schema 建议）
+    schema = parsed.get("schema", {})
+    if not isinstance(schema, dict):
+        schema = {}
+    schema_entity_types = schema.get("entity_types", {}) if isinstance(schema.get("entity_types"), dict) else {}
+    schema_relation_types = schema.get("relation_types", {}) if isinstance(schema.get("relation_types"), dict) else {}
+
     return {
         "entities": cleaned_entities,
         "relations": cleaned_relations,
+        "schema": {
+            "entity_types": {
+                "create": schema_entity_types.get("create", []),
+                "update": schema_entity_types.get("update", []),
+            },
+            "relation_types": {
+                "create": schema_relation_types.get("create", []),
+                "update": schema_relation_types.get("update", []),
+            },
+        },
     }
 
 
@@ -277,18 +356,18 @@ def plan_ontology_changes(
 ) -> dict:
     """根据自然语言描述生成本体变更计划。
 
-    返回结构：
+    返回结构:
     {
         "entities": {"create": [...], "update": [...], "delete": [...]},
         "relations": {"create": [...], "update": [...], "delete": [...]},
         "explanation": "..."
     }
     """
-    ontology_context = _build_ontology_context(db_path)
+    ontology_context = _build_ontology_context(db_path, include_schema=True)
 
-    system_prompt = """你是一个本体知识库维护专家。用户会用自然语言描述他希望对 Ontology 进行的修改，你的任务是生成一份结构化的变更计划。
+    system_prompt = """你是一个本体知识库维护专家。用户会用自然语言描述他希望对 Ontology 进行的修改,你的任务是生成一份结构化的变更计划。
 
-请严格按以下 JSON 格式返回结果（只返回一个 JSON 代码块，不要额外解释）：
+请严格按以下 JSON 格式返回结果(只返回一个 JSON 代码块,不要额外解释):
 
 ```json
 {
@@ -314,22 +393,41 @@ def plan_ontology_changes(
       {"relation_id": "..."}
     ]
   },
+  "schema": {
+    "entity_types": {
+      "create": [],
+      "update": []
+    },
+    "relation_types": {
+      "create": [],
+      "update": []
+    }
+  },
   "explanation": "简要说明变更原因"
 }
 ```
 
-规则：
-1. 实体类型仅限：requirement、function、module、interface、data_entity、test_case、constraint、actor。
+规则:
+1. 实体类型仅限:requirement、function、module、interface、data_entity、test_case、constraint、actor。
 2. 新增实体的 suggested_id 使用"类型前缀:英文小写slug"格式。
-3. relation_type 仅限：depends_on、causes、constrains、impacts、conflicts_with、derived_from、implements、contains、refines、relates_to。
-4. 若用户描述不够明确，宁可少改也不要过度推断；delete 操作要特别谨慎。
-5. 若未提供目标实体 ID，由你自行判断要修改哪些实体。"""
+3. relation_type 仅限:depends_on、causes、constrains、impacts、conflicts_with、derived_from、implements、contains、refines、relates_to。
+4. 若用户描述不够明确,宁可少改也不要过度推断;delete 操作要特别谨慎。
+5. 若未提供目标实体 ID,由你自行判断要修改哪些实体。
+
+6. [可选] Schema 层变更:如果用户要求修改类型层次(如"把function设为requirement的子类型")
+   或关系语义(如"新增一个triggers关系类型"),请在 schema 字段中填写。
+   只在有把握时才写,不确定的不写。
+   - entity_types.create: 新增实体类型(需要 id, name, description, parent_id)
+   - entity_types.update: 修改现有实体类型(需要 id, 和要修改的字段)
+   - relation_types.create: 新增关系类型(需要 id, name, symmetric, transitive, domain_type, range_type)
+   - relation_types.update: 修改现有关系类型(需要 id, 和要修改的字段)
+   如果不需要 Schema 变更,返回空对象。"""
 
     target_hint = ""
     if target_entity_id:
-        target_hint = f"\n优先修改的目标实体 ID：{target_entity_id}\n"
+        target_hint = f"\n优先修改的目标实体 ID:{target_entity_id}\n"
     if target_entity_context:
-        target_hint += f"目标实体上下文：\n{target_entity_context}\n"
+        target_hint += f"目标实体上下文:\n{target_entity_context}\n"
 
     user_prompt = f"""## 当前 Ontology 中的已知实体
 {ontology_context}
@@ -337,13 +435,13 @@ def plan_ontology_changes(
 ## 用户的修改描述
 {description}
 
-请生成变更计划，返回严格 JSON。"""
+请生成变更计划,返回严格 JSON。"""
 
     llm_response = _call_llm(system_prompt, user_prompt, temperature=0.2, max_tokens=4096)
     parsed = _first_json_block(llm_response)
 
     if not isinstance(parsed, dict):
-        raise RuntimeError("LLM 返回的 JSON 格式不正确，无法解析变更计划")
+        raise RuntimeError("LLM 返回的 JSON 格式不正确,无法解析变更计划")
 
     # 规范化结构
     entities = parsed.get("entities", {})
@@ -352,6 +450,11 @@ def plan_ontology_changes(
         entities = {}
     if not isinstance(relations, dict):
         relations = {}
+
+    # 提取 schema 变更部分
+    schema = parsed.get("schema", {})
+    if not isinstance(schema, dict):
+        schema = {}
 
     return {
         "entities": {
@@ -364,12 +467,16 @@ def plan_ontology_changes(
             "update": relations.get("update", []) if isinstance(relations.get("update"), list) else [],
             "delete": relations.get("delete", []) if isinstance(relations.get("delete"), list) else [],
         },
+        "schema": {
+            "entity_types": schema.get("entity_types", {"create": [], "update": []}),
+            "relation_types": schema.get("relation_types", {"create": [], "update": []}),
+        },
         "explanation": str(parsed.get("explanation", "")).strip(),
     }
 
 
 # ---------------------------------------------------------------------------
-# PRD 增强流水线（四阶段：抽取 → 匹配+图搜索 → 推理 → 融合）
+# PRD 增强流水线(四阶段:抽取 → 匹配+图搜索 → 推理 → 融合)
 # ---------------------------------------------------------------------------
 
 def _load_prd_parser_config() -> dict:
@@ -425,11 +532,11 @@ def _call_llm_with_retry(
             if attempt < max_retries - 1:
                 wait = 2 ** attempt  # 1s, 2s, 4s
                 time.sleep(wait)
-    raise RuntimeError(f"LLM 调用失败（重试 {max_retries} 次）: {last_err}")
+    raise RuntimeError(f"LLM 调用失败(重试 {max_retries} 次): {last_err}")
 
 
 def _extract_prd_entities(content: str) -> list:
-    """阶段 1：用 LLM 从 PRD 文本中抽取功能级实体。
+    """阶段 1:用 LLM 从 PRD 文本中抽取功能级实体。
 
     返回 [{name, type, description, search_keywords: [str]}]
     """
@@ -437,7 +544,7 @@ def _extract_prd_entities(content: str) -> list:
 
     system_prompt = """你是实体抽取专家。从用户提供的 PRD 文档中抽取功能级实体。
 
-只返回一个 JSON 代码块，格式如下：
+只返回一个 JSON 代码块,格式如下:
 
 ```json
 [
@@ -450,16 +557,16 @@ def _extract_prd_entities(content: str) -> list:
 ]
 ```
 
-规则：
-1. 实体类型仅限：requirement、function、module、interface、data_entity、test_case、constraint、actor
-2. search_keywords 是用于在本体中检索的关键词列表（中英文均可），应包含实体的核心名称和同义词
-3. 只抽取 PRD 中明确提到的实体，不要过度推断
+规则:
+1. 实体类型仅限:requirement、function、module、interface、data_entity、test_case、constraint、actor
+2. search_keywords 是用于在本体中检索的关键词列表(中英文均可),应包含实体的核心名称和同义词
+3. 只抽取 PRD 中明确提到的实体,不要过度推断
 4. 每个实体至少提供 2 个 search_keywords"""
 
     user_prompt = f"""## PRD 文档内容
 {content}
 
-请抽取功能级实体，返回严格 JSON。"""
+请抽取功能级实体,返回严格 JSON。"""
 
     resp = _call_llm_with_retry(
         system_prompt, user_prompt,
@@ -491,7 +598,7 @@ def _extract_prd_entities(content: str) -> list:
 
 
 def _semantic_match_entities(prd_entities: list, db_path=None) -> list:
-    """阶段 2a+2b：SQL LIKE 预筛选候选 → LLM 批量语义匹配。
+    """阶段 2a+2b:SQL LIKE 预筛选候选 → LLM 批量语义匹配。
 
     返回 [{prd_entity_name, matched_entity_id, confidence, match: bool}]
     """
@@ -503,7 +610,7 @@ def _semantic_match_entities(prd_entities: list, db_path=None) -> list:
     parser_cfg = _load_prd_parser_config()
     threshold = parser_cfg["entity_confidence_threshold"]
 
-    # Step 2a: 对每个 PRD 实体，用 search_keywords 做 LIKE 检索获取候选
+    # Step 2a: 对每个 PRD 实体,用 search_keywords 做 LIKE 检索获取候选
     candidates_map = {}  # prd_entity_name -> [candidate entity dicts]
     for pe in prd_entities:
         seen_ids = set()
@@ -520,7 +627,7 @@ def _semantic_match_entities(prd_entities: list, db_path=None) -> list:
                     })
         candidates_map[pe["name"]] = candidates
 
-    # 如果所有候选都为空，直接返回未匹配
+    # 如果所有候选都为空,直接返回未匹配
     if not any(candidates_map.values()):
         return [{"prd_entity_name": pe["name"], "matched_entity_id": None, "confidence": 0.0, "match": False}
                 for pe in prd_entities]
@@ -534,9 +641,9 @@ def _semantic_match_entities(prd_entities: list, db_path=None) -> list:
             "candidates": cands,
         })
 
-    system_prompt = """你是实体语义匹配专家。对于每个 PRD 实体，判断候选实体列表中是否有语义匹配的实体。
+    system_prompt = """你是实体语义匹配专家。对于每个 PRD 实体,判断候选实体列表中是否有语义匹配的实体。
 
-只返回一个 JSON 代码块，格式如下：
+只返回一个 JSON 代码块,格式如下:
 
 ```json
 [
@@ -549,16 +656,16 @@ def _semantic_match_entities(prd_entities: list, db_path=None) -> list:
 ]
 ```
 
-规则：
-1. 如果候选列表中有语义匹配的实体，填写 matched_entity_id 和 confidence（0.5-1.0），match=true
-2. 如果没有匹配的，matched_entity_id 为 null，confidence 为 0.0，match=false
-3. 匹配判断要考虑：名称相似度、类型一致性、描述语义相似度
+规则:
+1. 如果候选列表中有语义匹配的实体,填写 matched_entity_id 和 confidence(0.5-1.0),match=true
+2. 如果没有匹配的,matched_entity_id 为 null,confidence 为 0.0,match=false
+3. 匹配判断要考虑:名称相似度、类型一致性、描述语义相似度
 4. confidence < 0.5 的视为不匹配"""
 
     user_prompt = f"""## 待匹配的 PRD 实体与候选列表
 {json.dumps(match_input, ensure_ascii=False, indent=2)}
 
-请逐一判断匹配关系，返回严格 JSON。"""
+请逐一判断匹配关系,返回严格 JSON。"""
 
     resp = _call_llm_with_retry(
         system_prompt, user_prompt,
@@ -567,7 +674,7 @@ def _semantic_match_entities(prd_entities: list, db_path=None) -> list:
     )
     parsed = _first_json_block(resp)
     if not isinstance(parsed, list):
-        # 兜底：全部标记为不匹配
+        # 兜底:全部标记为不匹配
         return [{"prd_entity_name": pe["name"], "matched_entity_id": None, "confidence": 0.0, "match": False}
                 for pe in prd_entities]
 
@@ -588,7 +695,7 @@ def _semantic_match_entities(prd_entities: list, db_path=None) -> list:
 
 
 def _graph_search(matched_entity_ids: list, db_path=None, max_depth: int = 2) -> dict:
-    """阶段 2c：对匹配到的实体做图搜索，收集子图。
+    """阶段 2c:对匹配到的实体做图搜索,收集子图。
 
     返回 {entities: [...], relations: [...]}
     """
@@ -607,7 +714,7 @@ def _graph_search(matched_entity_ids: list, db_path=None, max_depth: int = 2) ->
     for eid in matched_entity_ids:
         entity_ids_set.add(eid)
 
-        # 1跳关系（全部类型）
+        # 1跳关系(全部类型)
         for rel in get_entity_relations(eid, db_path=db_path):
             rid = rel.get("id", "")
             if rid not in seen_relation_ids:
@@ -618,7 +725,7 @@ def _graph_search(matched_entity_ids: list, db_path=None, max_depth: int = 2) ->
             if related_id:
                 entity_ids_set.add(related_id)
 
-        # 多跳 BFS（仅可传递关系类型）
+        # 多跳 BFS(仅可传递关系类型)
         for rtype in transitive_types:
             try:
                 for t_rel in get_transitive_relations(eid, relation_type=rtype, max_depth=max_depth, db_path=db_path):
@@ -638,7 +745,7 @@ def _graph_search(matched_entity_ids: list, db_path=None, max_depth: int = 2) ->
                             "transitive": True,
                         })
             except Exception:
-                pass  # 某些关系类型可能不存在，跳过
+                pass  # 某些关系类型可能不存在,跳过
 
     # 批量获取实体详情
     all_ids = list(entity_ids_set)
@@ -653,7 +760,7 @@ def _graph_search(matched_entity_ids: list, db_path=None, max_depth: int = 2) ->
 
 def _format_subgraph_for_llm(subgraph: dict) -> str:
     """将子图格式化为 LLM 可读的文本。"""
-    lines = ["## 本体子图（匹配到的实体和关系）"]
+    lines = ["## 本体子图(匹配到的实体和关系)"]
 
     lines.append("\n### 实体")
     for e in subgraph.get("entities", []):
@@ -669,11 +776,11 @@ def _format_subgraph_for_llm(subgraph: dict) -> str:
             related = r.get("related_entity_name", r.get("target_entity_name", "?"))
             lines.append(f"- [{direction}] {rel_type} → {related} (conf: {r.get('confidence', 0)})")
 
-    return "\n".join(lines) if len(lines) > 2 else "（子图为空）"
+    return "\n".join(lines) if len(lines) > 2 else "(子图为空)"
 
 
 def _reason_inferences(content: str, subgraph: dict) -> dict:
-    """阶段 3：用 3 个并行 LLM subagent 推理隐含的依赖、约束、影响。
+    """阶段 3:用 3 个并行 LLM subagent 推理隐含的依赖、约束、影响。
 
     返回 {dependencies: [...], constraints: [...], impacts: [...]}
     """
@@ -705,11 +812,11 @@ def _reason_inferences(content: str, subgraph: dict) -> dict:
 
 {subgraph_text}
 
-请基于以上信息进行推理，返回严格 JSON。"""
+请基于以上信息进行推理,返回严格 JSON。"""
 
-    dep_system = """你是依赖分析专家。基于 PRD 文档和本体子图，推理出 PRD 中**隐含的**依赖关系（即 PRD 未明确写出，但通过本体关系图可以推断出的依赖）。
+    dep_system = """你是依赖分析专家。基于 PRD 文档和本体子图,推理出 PRD 中**隐含的**依赖关系(即 PRD 未明确写出,但通过本体关系图可以推断出的依赖)。
 
-只返回一个 JSON 代码块：
+只返回一个 JSON 代码块:
 
 ```json
 {
@@ -724,9 +831,9 @@ def _reason_inferences(content: str, subgraph: dict) -> dict:
 }
 ```"""
 
-    constraint_system = """你是约束分析专家。基于 PRD 文档和本体子图，推理出 PRD 中**隐含的**约束条件（即 PRD 未明确写出，但通过本体关系图可以推断出的约束）。
+    constraint_system = """你是约束分析专家。基于 PRD 文档和本体子图,推理出 PRD 中**隐含的**约束条件(即 PRD 未明确写出,但通过本体关系图可以推断出的约束)。
 
-只返回一个 JSON 代码块：
+只返回一个 JSON 代码块:
 
 ```json
 {
@@ -741,9 +848,9 @@ def _reason_inferences(content: str, subgraph: dict) -> dict:
 }
 ```"""
 
-    impact_system = """你是影响分析专家。基于 PRD 文档和本体子图，推理出 PRD 中描述的变更会**影响到**哪些已有模块或功能（即通过本体关系图可以推断出的连锁影响）。
+    impact_system = """你是影响分析专家。基于 PRD 文档和本体子图,推理出 PRD 中描述的变更会**影响到**哪些已有模块或功能(即通过本体关系图可以推断出的连锁影响)。
 
-只返回一个 JSON 代码块：
+只返回一个 JSON 代码块:
 
 ```json
 {
@@ -776,7 +883,7 @@ def _reason_inferences(content: str, subgraph: dict) -> dict:
 
 
 def _fuse_prd(content: str, inferences: dict, subgraph: dict) -> str:
-    """阶段 4：用 LLM 将推理结果融合回 PRD 原文，生成增强版。
+    """阶段 4:用 LLM 将推理结果融合回 PRD 原文,生成增强版。
 
     返回增强后的 Markdown 文本。
     """
@@ -785,51 +892,51 @@ def _fuse_prd(content: str, inferences: dict, subgraph: dict) -> str:
     subgraph_text = _format_subgraph_for_llm(subgraph)
     inferences_text = json.dumps(inferences, ensure_ascii=False, indent=2)
 
-    system_prompt = """你是 PRD 增广优化专家。你的任务是基于"本体知识推理结果"，**对用户提供的 PRD 原文进行增广优化**——保留原文全部内容并用结构化方式补全隐含信息，输出一份**更完善的需求文档**。
+    system_prompt = """你是 PRD 增广优化专家。你的任务是基于"本体知识推理结果",**对用户提供的 PRD 原文进行增广优化**--保留原文全部内容并用结构化方式补全隐含信息,输出一份**更完善的需求文档**。
 
-## 输出格式（必须严格遵守）
+## 输出格式(必须严格遵守)
 
-使用如下 Markdown 结构，**逐段输出**，便于调用方 Agent 扫描和复用：
+使用如下 Markdown 结构,**逐段输出**,便于调用方 Agent 扫描和复用:
 
 ```
-# 增强版 PRD：<一句话概括本次需求>
+# 增强版 PRD:<一句话概括本次需求>
 
 ## 原始需求
-> <将 PRD 原文用引用块完整呈现，不省略、不改写>
+> <将 PRD 原文用引用块完整呈现,不省略、不改写>
 
 ## 增强说明
-<2~3 句话说明本次基于哪些本体知识（实体/关系）做了增广，便于调用方理解来源>
+<2~3 句话说明本次基于哪些本体知识(实体/关系)做了增广,便于调用方理解来源>
 
 ## 隐含依赖
-- **<依赖对象 1>**：<一句话说明为什么这是隐含依赖，附本体证据>
-- **<依赖对象 2>**：...
+- **<依赖对象 1>**:<一句话说明为什么这是隐含依赖,附本体证据>
+- **<依赖对象 2>**:...
 
 ## 约束条件
-- **<约束主题 1>**：<约束内容，附本体证据>
-- **<约束主题 2>**：...
+- **<约束主题 1>**:<约束内容,附本体证据>
+- **<约束主题 2>**:...
 
 ## 影响范围
-- **<受影响模块 1>**：<影响内容，附本体证据>
-- **<受影响模块 2>**：...
+- **<受影响模块 1>**:<影响内容,附本体证据>
+- **<受影响模块 2>**:...
 
 ## 增强后的完整需求
-<在此重写一份整合后的需求描述，把隐含依赖 / 约束 / 影响 **自然融合**到对应段落中（用加粗标记或括号注解），让整篇读起来像一份完善的需求文档>
+<在此重写一份整合后的需求描述,把隐含依赖 / 约束 / 影响 **自然融合**到对应段落中(用加粗标记或括号注解),让整篇读起来像一份完善的需求文档>
 ```
 
 ## 增强原则
 
-1. **保留原文**：原始需求章节必须**逐字保留**用户输入，不删不改。
-2. **结构化优先**：隐含依赖/约束/影响用列表 + 加粗，方便调用方 Agent 抽取和呈现给用户。
-3. **有据可依**：每条增强信息必须来自 `inferences` 或 `subgraph` 提供的证据，不要凭空捏造。
-4. **自然融合**：在"增强后的完整需求"小节中，把上述信息自然地融入对应段落，使用 `**加粗**` 或 `（注解）` 等方式标注。
-5. **不输出元信息**：不要在末尾追加"## 关系分析"等附录章节，也不要输出 JSON / 解释说明。
-6. **空类目处理**：若某类目（如约束）无推理结果，写 "无新增约束"。
-7. **直接输出 Markdown**，不要使用 ```markdown 代码块包裹。"""
+1. **保留原文**:原始需求章节必须**逐字保留**用户输入,不删不改。
+2. **结构化优先**:隐含依赖/约束/影响用列表 + 加粗,方便调用方 Agent 抽取和呈现给用户。
+3. **有据可依**:每条增强信息必须来自 `inferences` 或 `subgraph` 提供的证据,不要凭空捏造。
+4. **自然融合**:在"增强后的完整需求"小节中,把上述信息自然地融入对应段落,使用 `**加粗**` 或 `(注解)` 等方式标注。
+5. **不输出元信息**:不要在末尾追加"## 关系分析"等附录章节,也不要输出 JSON / 解释说明。
+6. **空类目处理**:若某类目(如约束)无推理结果,写 "无新增约束"。
+7. **直接输出 Markdown**,不要使用 ```markdown 代码块包裹。"""
 
     user_prompt = f"""## 用户输入的 PRD 原文
 {content}
 
-## 推理结果（来自本体子图的隐含依赖 / 约束 / 影响）
+## 推理结果(来自本体子图的隐含依赖 / 约束 / 影响)
 {inferences_text}
 
 {subgraph_text}
@@ -848,13 +955,13 @@ def _fuse_prd(content: str, inferences: dict, subgraph: dict) -> str:
 
 
 def parse_prd(content: str, db_path=None) -> dict:
-    """解析 PRD 并返回增强版 PRD（四阶段流水线）。
+    """解析 PRD 并返回增强版 PRD（旧版四阶段流水线，保留向后兼容）。
 
     流水线：
-    1. LLM 实体抽取 — 从 PRD 文本提取功能级实体
-    2. 语义匹配 + 图搜索 — 在本体中模糊匹配实体，BFS 遍历关系表获取子图
-    3. LLM 推理 — 3 个并行 subagent 推理隐含依赖/约束/影响
-    4. LLM 融合 — 将推理结果融合回 PRD 原文
+    1. LLM 实体抽取 - 从 PRD 文本提取功能级实体
+    2. 语义匹配 + 图搜索 - 在本体中模糊匹配实体，BFS 遍历关系表获取子图
+    3. LLM 推理 - 3 个并行 subagent 推理隐含依赖/约束/影响
+    4. LLM 融合 - 将推理结果融合回 PRD 原文
 
     返回:
         enriched_prd: 增强后的 PRD Markdown
@@ -896,3 +1003,161 @@ def parse_prd(content: str, db_path=None) -> dict:
             "stage3_inferences": inferences,
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# V2: 基于规则引擎的 PRD 增强流水线（2 次 LLM 调用）
+# ---------------------------------------------------------------------------
+
+def parse_prd_v2(content: str, db_path=None) -> dict:
+    """解析 PRD 并返回增强版 PRD（V2 规则引擎流水线）。
+
+    新流水线（2 次 LLM 调用）：
+    1. [LLM] 实体抽取 + 语义匹配 - 从 PRD 文本提取实体并匹配到本体
+    2. [规则引擎] 推理流水线 - 7 大规则 + 一致性检查
+    3. [LLM] PRD 融合 - 将规则推理结果转为增强版 PRD
+
+    返回:
+        enriched_prd: 增强后的 PRD Markdown
+        summary: 解析摘要（含各阶段统计）
+        pipeline_trace: 各阶段中间结果（用于调试）
+    """
+    # 阶段 1: LLM 实体抽取 + 语义匹配（复用现有逻辑）
+    prd_entities = _extract_prd_entities(content)
+    match_results = _semantic_match_entities(prd_entities, db_path)
+    matched_ids = [m["matched_entity_id"] for m in match_results if m.get("match")]
+
+    if not matched_ids:
+        # 没有匹配到任何实体，直接返回原文
+        return {
+            "enriched_prd": content,
+            "summary": {
+                "entities_extracted": len(prd_entities),
+                "entities_matched": 0,
+                "inferences": {},
+                "enhancement_mode": "no_match",
+                "pipeline_stages": ["llm_extract_match"],
+            },
+            "pipeline_trace": {
+                "stage1_entities": prd_entities,
+                "stage1_matches": match_results,
+            },
+        }
+
+    # 阶段 2: 规则引擎推理（替换原来的阶段 2c + 3）
+    from engine.core import ReasoningEngine
+    from engine.rules.transitive import TransitiveClosureRule
+    from engine.rules.symmetric import SymmetricRule
+    from engine.rules.inverse import InverseRelationRule
+    from engine.rules.constraint import ConstraintPropagationRule
+    from engine.rules.impact import ImpactAnalysisRule
+    from engine.rules.inheritance import InheritanceRule
+    from engine.rules.conflict import ConflictDetectionRule
+    from engine.checker import ConsistencyChecker
+
+    engine = ReasoningEngine(db_path=db_path)
+    engine.register_rule(TransitiveClosureRule())
+    engine.register_rule(SymmetricRule())
+    engine.register_rule(InverseRelationRule())
+    engine.register_rule(ConstraintPropagationRule())
+    engine.register_rule(ImpactAnalysisRule())
+    engine.register_rule(InheritanceRule())
+    engine.register_rule(ConflictDetectionRule())
+    engine.register_checker(ConsistencyChecker())
+
+    reasoning_output = engine.run(matched_ids)
+
+    # 阶段 3: LLM 融合（将规则推理结果转为增强版 PRD）
+    enriched_prd = _fuse_prd_from_reasoning(content, reasoning_output)
+
+    return {
+        "enriched_prd": enriched_prd,
+        "summary": {
+            "entities_extracted": len(prd_entities),
+            "entities_matched": len(matched_ids),
+            "inferences": reasoning_output.stats,
+            "enhancement_mode": "rule_engine",
+            "pipeline_stages": ["llm_extract_match", "rule_engine", "llm_fuse"],
+            "llm_calls": 2,
+        },
+        "pipeline_trace": {
+            "stage1_entities": prd_entities,
+            "stage1_matches": match_results,
+            "stage2_reasoning": reasoning_output.to_dict(),
+        },
+    }
+
+
+def _fuse_prd_from_reasoning(content: str, reasoning_output) -> str:
+    """将规则引擎的推理结果融合为增强版 PRD（单次 LLM 调用）。
+
+    与 _fuse_prd 不同：推理结果来自规则引擎，每条都有明确的规则名称和证据。
+    LLM 只负责将这些结构化推理结果转化为自然语言 PRD 增广内容。
+    """
+    gen_cfg = _load_prd_generator_config()
+    reasoning_text = reasoning_output.to_llm_format()
+
+    system_prompt = """你是 PRD 增广优化专家。基于规则推理引擎提供的推理结果，将用户 PRD 原文增广为完善的需求文档。
+
+推理结果中的每条推理都有明确的规则名称、证据和置信度，请忠实呈现，不要添加未在推理结果中出现的信息。
+
+## 输出格式（必须严格遵守）
+
+使用如下 Markdown 结构，逐段输出：
+
+```
+# 增强版 PRD：<一句话概括本次需求>
+
+## 原始需求
+> <将 PRD 原文用引用块完整呈现，不省略、不改写>
+
+## 增强说明
+<2~3 句话说明本次基于哪些本体知识做了增广，列出来自规则引擎的推理类型>
+
+## 隐含依赖
+- **<依赖对象 1>**：<一句话说明推理依据，附规则名称和证据>
+- **<依赖对象 2>**：...
+（如无推理结果，写 "未发现隐含依赖"）
+
+## 约束条件
+- **<约束主题 1>**：<约束内容，附规则名称和证据>
+（如无推理结果，写 "无新增约束"）
+
+## 影响范围
+- **<受影响模块 1>**：<影响内容，附规则名称和证据>
+（如无推理结果，写 "无影响范围推理结果"）
+
+## ⚠️ 冲突检测
+- **<冲突描述>**：<冲突详情，附规则名称>
+（如无冲突，写 "未检测到冲突"）
+
+## 增强后的完整需求
+<在此重写一份整合后的需求描述，把隐含依赖 / 约束 / 影响 自然融合到对应段落中（用加粗标记或括号注解），让整篇读起来像一份完善的需求文档>
+```
+
+## 增强原则
+
+1. **保留原文**：原始需求章节必须逐字保留用户输入，不删不改。
+2. **忠实推理**：每条增强信息必须来自推理结果，不要凭空捏造。引用规则名称和证据。
+3. **结构化优先**：用列表 + 加粗，方便调用方 Agent 抽取。
+4. **空类目处理**：若某类目无推理结果，写对应的无结果提示。
+5. **直接输出 Markdown**，不要使用代码块包裹。
+"""
+
+    user_prompt = f"""## 用户输入的 PRD 原文
+{content}
+
+## 规则引擎推理结果
+{reasoning_text}
+
+请按照规定的 Markdown 结构输出增强版 PRD。"""
+
+    resp = _call_llm_with_retry(
+        system_prompt, user_prompt,
+        temperature=gen_cfg["temperature"],
+        max_tokens=gen_cfg["max_tokens"],
+        max_retries=3,
+    )
+    # 清理可能残留的 JSON 块
+    cleaned = re.sub(r"```json\n.*?\n```", "", resp, flags=re.DOTALL).strip()
+    return cleaned if cleaned else resp

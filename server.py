@@ -11,6 +11,7 @@ from tools.query_ontology import register as register_query_ontology
 from tools.ingest_document import register as register_ingest_document
 from tools.modify_ontology import register as register_modify_ontology
 from tools.delete_entity import register as register_delete_entity
+from tools.manage_schema import register as register_manage_schema
 
 # 创建 MCP 服务器
 mcp = FastMCP(
@@ -23,6 +24,7 @@ register_query_ontology(mcp)
 register_ingest_document(mcp)
 register_modify_ontology(mcp)
 register_delete_entity(mcp)
+register_manage_schema(mcp)
 
 
 def main():

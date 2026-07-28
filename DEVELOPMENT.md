@@ -230,6 +230,71 @@ prd-ontology-mcp/
     └── seed.py               # 预设 Ontology 初始化（按协议）
 ```
 
+## 开发进度记录
+
+### Phase 0: MVP 阶段（已完成 ✅）
+
+- **时间**：2026-07-07 ~ 2026-07-14
+- **内容**：
+  - SQLite 存储层（entities + relations + entity_types + relation_types + documents）
+  - Entity / Relation CRUD（含版本历史 Event Sourcing）
+  - LLM 解析器（四阶段流水线：抽取 -> 匹配+图搜索 -> LLM 推理 -> 融合）
+  - 5 个 MCP 工具（parse_prd / query_ontology / ingest_document / modify_ontology / delete_entity）
+  - Web 可视化前端
+  - 4 个 Trae Skill 定义
+  - 测试数据（CCB 73 实体 + Anthropic 40 实体）
+
+### Phase 1: 规则推理引擎（已完成 ✅）
+
+- **时间**：2026-07-23
+- **内容**：
+  - 设计并实现了基于规则的本体推理引擎，替代 LLM 语义猜测
+  - LLM 调用从 6 次降至 2 次（抽取+匹配 / PRD 融合）
+  - 推理结果完全可复现，每条推理有规则名称和明确证据
+  - 7 大推理规则：
+    1. **传递闭包**（transitive closure）- 递归 CTE 计算多跳间接依赖
+    2. **对称推理**（symmetric inference）- 对称关系自动推导反向
+    3. **逆关系推理**（inverse relation）- 正向关系的逆向语义
+    4. **约束传播**（constraint propagation）- 约束沿包含关系传播给子实体
+    5. **影响分析**（impact analysis）- BFS 遍历正/反/双向关系网络
+    6. **类型继承**（type inheritance）- 兄弟实体共性关系推导
+    7. **冲突检测**（conflict detection）- 4 种矛盾模式检测
+  - 一致性检查器（类型兼容性 / 孤立实体 / 推理矛盾）
+  - 8 个单元测试全部通过
+  - 新增 `parse_prd_v2()` 函数，保留原 `parse_prd()` 向后兼容
+  - `tools/parse_prd.py` 已切换到 V2 流水线
+
+### Phase 2: 端到端集成测试（已完成 ✅）
+
+- **时间**：2026-07-28
+- **内容**：
+  - 用真实 PRD（用户登录功能需求）完整走通 `parse_prd_v2` 流水线
+  - 创建测试本体数据库：13 个实体 + 19 条关系
+  - LLM 抽取 14 个实体 → 8 个匹配到本体 → 规则引擎产出 **67 条推理结果** → LLM 融合
+  - PRD 长度：276 → **5,438 字符**（增强 5,162 字符）
+  - LLM 调用：6 次 → **2 次**（-67%）
+  - 推理可复现：规则引擎确定性推理，每条有 `rule_name` + `evidence`
+
+### Phase 3: Schema 层增广（已完成 ✅）
+
+- **时间**：2026-07-28
+- **内容**：
+  - `relation_types` 表新增 `inverse_of`, `domain_type`, `range_type` 字段
+  - 预置类型层次：function→requirement, interface→module, data_entity→actor, constraint→requirement, test_case→requirement
+  - 关系语义修正：causes transitive=1, 5 种 domain/range 约束
+  - 新增 `models/schema_manager.py` — Schema 管理器
+  - 新增 `tools/manage_schema.py` — MCP 工具
+  - 增广 `parser/llm_parser.py` — LLM prompt 支持 Schema 分析
+
+### Phase 4: 待开发
+
+- [ ] 新增 `reason_ontology` MCP 工具（直接暴露推理引擎给 Agent）
+- [ ] 增强 query_ontology 工具（支持推理查询）
+- [ ] 推理结果缓存与增量更新
+- [ ] 一致性检查器增强（类型兼容性 / 孤立实体检测）
+- [ ] Web 看板完善（推理结果展示 / 本体编辑）
+- [ ] 审核工作流（自监督迭代框架）
+
 ## 自监督迭代框架（Phase 2+）
 
 不在 MVP 范围内，详见 wiki 方案文档 `wiki/ideas/2026-07-07-prd-ontology-mcp-plugin.md`。
@@ -239,3 +304,14 @@ prd-ontology-mcp/
 - [PRD Ontology MCP 插件方案（wiki）](../wiki/ideas/2026-07-07-prd-ontology-mcp-plugin.md)
 - [Palantir Ontology 深度调研](../wiki/tech/ai-coding/2026-07-08-palantir-ontology-deep-dive.md)
 - [类似 Palantir 的开源代码分析项目调研](../wiki/tech/ai-coding/2026-07-06-ontology-like-code-analysis-projects.md)
+- [推理引擎开发计划](REASONING_ENGINE_DEV_PLAN.md)
+
+## 更新历史
+
+| 日期 | 更新内容 |
+|------|----------|
+| 2026-07-07 | 项目创建，MVP 方案设计 |
+| 2026-07-14 | MVP 阶段完成，四阶段流水线 + 5 个 MCP 工具 |
+| 2026-07-23 | 规则推理引擎完成，LLM 调用从 6 次降至 2 次，7 大规则 + 一致性检查 |
+| 2026-07-24 | SQLite 存储层 + MCP 服务器完成 |
+| 2026-07-28 | 端到端集成测试通过（PRD 276→5438 字符，67 条推理）| Schema 层增广完成（类型层次 + 关系语义 + manage_schema 工具）| 清理历史仓库 PRDOntology/ + prd-ontology-mcp/，统一到 CodingOntology |
