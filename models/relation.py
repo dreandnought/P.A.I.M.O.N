@@ -171,6 +171,7 @@ def create_relation(
 ):
     """创建关系。若已存在则返回已有关系。"""
     import json
+    from engine.cache import invalidate_on_relation_change
 
     existing = get_relation_by_entities(source_id, target_id, type_id, db_path)
     if existing:
@@ -191,12 +192,14 @@ def create_relation(
     )
     conn.commit()
     conn.close()
+    invalidate_on_relation_change(source_id, target_id)
     return get_relation_by_entities(source_id, target_id, type_id, db_path)
 
 
 def update_relation(relation_id, updates, db_path=None):
     """更新关系部分字段。"""
     import json
+    from engine.cache import invalidate_on_relation_change
 
     allowed = {"weight", "confidence", "metadata"}
     filtered = {k: v for k, v in updates.items() if k in allowed}
@@ -212,12 +215,17 @@ def update_relation(relation_id, updates, db_path=None):
     values.append(relation_id)
 
     conn = get_connection(db_path)
+    # 先获取 source_id 和 target_id 用于缓存失效
+    row = conn.execute("SELECT source_id, target_id FROM relations WHERE id = ?", (relation_id,)).fetchone()
     conn.execute(
         f"UPDATE relations SET {set_clause} WHERE id = ?",
         values,
     )
     conn.commit()
     conn.close()
+
+    if row:
+        invalidate_on_relation_change(row["source_id"], row["target_id"])
 
     conn = get_connection(db_path)
     row = conn.execute(
@@ -231,8 +239,15 @@ def update_relation(relation_id, updates, db_path=None):
 
 def delete_relation(relation_id, db_path=None):
     """删除关系。"""
+    from engine.cache import invalidate_on_relation_change
+
     conn = get_connection(db_path)
+    row = conn.execute("SELECT source_id, target_id FROM relations WHERE id = ?", (relation_id,)).fetchone()
     cur = conn.execute("DELETE FROM relations WHERE id = ?", (relation_id,))
     conn.commit()
     conn.close()
+
+    if row:
+        invalidate_on_relation_change(row["source_id"], row["target_id"])
+
     return cur.rowcount > 0

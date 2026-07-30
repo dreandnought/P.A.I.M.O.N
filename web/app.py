@@ -17,6 +17,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models.schema import get_connection, get_db_path, init_db
 from models.entity import get_entity, get_entity_by_name, search_entities, list_all_entities
 from models.relation import get_entity_relations
+from engine.cache import get_cache
+from engine.feedback import get_feedback_stats, list_recent_feedback
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(BASE_DIR)
@@ -317,6 +319,89 @@ def api_test_llm_config():
         return jsonify({"ok": True, "message": "Connection successful"})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 200
+
+
+# ── Phase 4: Reasoning & Feedback APIs ──────────────────────────────
+
+@app.route("/api/reasoning/run", methods=["POST"])
+def api_reasoning_run():
+    """Run reasoning engine on specified entities."""
+    data = request.get_json() or {}
+    entity_ids = data.get("entity_ids", [])
+    entity_names = data.get("entity_names", [])
+    query = data.get("query")
+    rules_only = data.get("rules_only")
+
+    if not entity_ids and not entity_names and not query:
+        return jsonify({"error": "Provide entity_ids, entity_names, or query"}), 400
+
+    from tools.reason_ontology import _resolve_entity_ids, _build_engine
+
+    resolved_ids = _resolve_entity_ids(entity_ids, entity_names, query)
+    if not resolved_ids:
+        return jsonify({"error": "No matching entities found"}), 404
+
+    engine = _build_engine(None, rules_only)
+    output = engine.run(resolved_ids)
+
+    return jsonify({
+        "entity_ids": resolved_ids,
+        "inferences": [r.to_dict() for r in output.inferences],
+        "conflicts": [r.to_dict() for r in output.conflicts],
+        "stats": output.stats,
+        "llm_summary": output.to_llm_format(),
+    })
+
+
+@app.route("/api/cache/stats")
+def api_cache_stats():
+    """Cache statistics."""
+    return jsonify(get_cache().stats())
+
+
+@app.route("/api/cache/clear", methods=["POST"])
+def api_cache_clear():
+    """Clear all cache."""
+    get_cache().invalidate_all()
+    return jsonify({"status": "cleared"})
+
+
+@app.route("/api/feedback/stats")
+def api_feedback_stats():
+    """Feedback statistics."""
+    return jsonify(get_feedback_stats())
+
+
+@app.route("/api/feedback/list")
+def api_feedback_list():
+    """List recent feedback."""
+    limit = int(request.args.get("limit", 20))
+    return jsonify({"feedback": list_recent_feedback(limit)})
+
+
+@app.route("/api/feedback/submit", methods=["POST"])
+def api_feedback_submit():
+    """Submit feedback for a prediction."""
+    from engine.feedback import submit_feedback
+
+    data = request.get_json() or {}
+    prediction_id = data.get("prediction_id")
+    status = data.get("status")
+    actual_result = data.get("actual_result")
+    developer_note = data.get("developer_note")
+    pr_id = data.get("pr_id")
+
+    if not prediction_id or not status:
+        return jsonify({"error": "prediction_id and status are required"}), 400
+
+    result = submit_feedback(
+        prediction_id=prediction_id,
+        status=status,
+        actual_result=actual_result,
+        developer_note=developer_note,
+        pr_id=pr_id,
+    )
+    return jsonify(result)
 
 
 if __name__ == "__main__":

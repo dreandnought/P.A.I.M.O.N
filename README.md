@@ -87,19 +87,22 @@ claude mcp add prd-ontology \
 }
 ```
 
-配置后，Coding Agent 将能使用以下工具：
+配置后，Coding Agent 将能使用以下工具（共 8 个）：
 
 | 工具 | 说明 |
 |------|------|
-| `parse_prd` | 解析 PRD 文档，抽取实体并匹配 Ontology 关系，返回增强版 PRD（只读，不修改数据库） |
-| `query_ontology` | 查询 Ontology 中的实体和关系（按名称/ID/关键词） |
+| `parse_prd` | 解析 PRD 文档，通过规则推理引擎返回增强版 PRD（只读，不修改数据库） |
+| `query_ontology` | 查询 Ontology 中的实体和关系（按名称/ID/关键词），可选附加推理结果 |
 | `ingest_document` | 从文本/Markdown 文档抽取实体和关系，写入 Ontology 数据库 |
 | `modify_ontology` | 根据自然语言描述修改已有 Ontology（增/删/改实体和关系） |
 | `delete_ontology_entity` | 根据实体 ID 或名称直接删除实体及其所有关联关系 |
+| `manage_schema` | 管理本体 Schema 层（查看/修改实体类型、关系类型语义） |
+| `reason_ontology` | **直接暴露推理引擎**，对指定实体运行 7 大规则推理，返回隐含依赖/约束/影响/冲突 |
+| `manage_feedback` | **自监督反馈工作流**，提交/查询推理结果的验证反馈，追踪自监督迭代进度 |
 
 ## Trae Skills（推荐用法）
 
-项目已在 `skills/` 下封装了 4 个 Skill，Coding Agent 可直接根据意图调用对应 Skill，自动完成与 MCP 的交互。
+项目已在 `.trae/skills/` 下封装了 5 个 Skill，Coding Agent 可直接根据意图调用对应 Skill，自动完成与 MCP 的交互。
 
 | Skill | 触发场景 | 对应 MCP 工具 |
 |-------|---------|--------------|
@@ -107,13 +110,15 @@ claude mcp add prd-ontology \
 | `parse-prd` | 用户输入 PRD 或需求文档，希望利用本体知识完善它 | `parse_prd` |
 | `ingest-document` | 用户输入一段文字/Markdown，要求提取实体和关系并写入本体 | `ingest_document` |
 | `delete-ontology-entity` | 用户要求删除本体中的某个实体及其关系 | `delete_ontology_entity` |
+| `prd-ontology-seeder` | 用户要求从代码库、API 文档等初始化预设 Ontology | 组合使用 `ingest_document` + `manage_schema` |
 
 Skill 文件位于：
 
-- `skills/query-ontology/SKILL.md`
-- `skills/parse-prd/SKILL.md`
-- `skills/ingest-document/SKILL.md`
-- `skills/delete-ontology-entity/SKILL.md`
+- `.trae/skills/query-ontology/SKILL.md`
+- `.trae/skills/parse-prd/SKILL.md`
+- `.trae/skills/ingest-document/SKILL.md`
+- `.trae/skills/delete-ontology-entity/SKILL.md`
+- `.trae/skills/prd-ontology-seeder/SKILL.md`
 
 每个 SKILL.md 中详细说明了参数、调用示例和返回值。Agent 识别到对应意图时，优先使用 Skill 中描述的工具和参数模板，无需手动拼装复杂 JSON。
 
@@ -135,8 +140,13 @@ Trae 会在当前工作区的 `.trae/skills/` 目录自动识别自定义 Skill�
    │       │   └── SKILL.md
    │       ├── ingest-document/
    │       │   └── SKILL.md
-   │       └── delete-ontology-entity/
-   │           └── SKILL.md
+   │       ├── delete-ontology-entity/
+   │       │   └── SKILL.md
+   │       ├── prd-ontology-seeder/
+   │       │   └── SKILL.md
+   │       └── prd-writer/
+   │           ├── SKILL.md
+   │           └── PROMPT.md
    │   ...
    ```
 

@@ -230,6 +230,107 @@ prd-ontology-mcp/
     └── seed.py               # 预设 Ontology 初始化（按协议）
 ```
 
+## 开发进度记录
+
+### Phase 0: MVP 阶段（已完成 ✅）
+
+- **时间**：2026-07-07 ~ 2026-07-14
+- **内容**：
+  - SQLite 存储层（entities + relations + entity_types + relation_types + documents）
+  - Entity / Relation CRUD（含版本历史 Event Sourcing）
+  - LLM 解析器（四阶段流水线：抽取 -> 匹配+图搜索 -> LLM 推理 -> 融合）
+  - 5 个 MCP 工具（parse_prd / query_ontology / ingest_document / modify_ontology / delete_entity）
+  - Web 可视化前端
+  - 4 个 Trae Skill 定义
+  - 测试数据（CCB 73 实体 + Anthropic 40 实体）
+
+### Phase 1: 规则推理引擎（已完成 ✅）
+
+- **时间**：2026-07-23
+- **内容**：
+  - 设计并实现了基于规则的本体推理引擎，替代 LLM 语义猜测
+  - LLM 调用从 6 次降至 2 次（抽取+匹配 / PRD 融合）
+  - 推理结果完全可复现，每条推理有规则名称和明确证据
+  - 7 大推理规则：
+    1. **传递闭包**（transitive closure）- 递归 CTE 计算多跳间接依赖
+    2. **对称推理**（symmetric inference）- 对称关系自动推导反向
+    3. **逆关系推理**（inverse relation）- 正向关系的逆向语义
+    4. **约束传播**（constraint propagation）- 约束沿包含关系传播给子实体
+    5. **影响分析**（impact analysis）- BFS 遍历正/反/双向关系网络
+    6. **类型继承**（type inheritance）- 兄弟实体共性关系推导
+    7. **冲突检测**（conflict detection）- 4 种矛盾模式检测
+  - 一致性检查器（类型兼容性 / 孤立实体 / 推理矛盾）
+  - 8 个单元测试全部通过
+  - 新增 `parse_prd_v2()` 函数，保留原 `parse_prd()` 向后兼容
+  - `tools/parse_prd.py` 已切换到 V2 流水线
+
+### Phase 2: 端到端集成测试（已完成 ✅）
+
+- **时间**：2026-07-28
+- **内容**：
+  - 用真实 PRD（用户登录功能需求）完整走通 `parse_prd_v2` 流水线
+  - 创建测试本体数据库：13 个实体 + 19 条关系
+  - LLM 抽取 14 个实体 → 8 个匹配到本体 → 规则引擎产出 **67 条推理结果** → LLM 融合
+  - PRD 长度：276 → **5,438 字符**（增强 5,162 字符）
+  - LLM 调用：6 次 → **2 次**（-67%）
+  - 推理可复现：规则引擎确定性推理，每条有 `rule_name` + `evidence`
+
+### Phase 3: Schema 层增广（已完成 ✅）
+
+- **时间**：2026-07-28
+- **内容**：
+  - `relation_types` 表新增 `inverse_of`, `domain_type`, `range_type` 字段
+  - 预置类型层次：function→requirement, interface→module, data_entity→actor, constraint→requirement, test_case→requirement
+  - 关系语义修正：causes transitive=1, 5 种 domain/range 约束
+  - 新增 `models/schema_manager.py` — Schema 管理器
+  - 新增 `tools/manage_schema.py` — MCP 工具
+  - 增广 `parser/llm_parser.py` — LLM prompt 支持 Schema 分析
+
+### Phase 4: 推理引擎增强与工程化（已完成 ✅）
+
+- **时间**：2026-07-30
+- **内容**：
+  - **新增 `reason_ontology` MCP 工具** - 直接暴露推理引擎给 Agent
+    - 支持 3 种实体输入方式（ID / 名称 / 关键词搜索）
+    - 支持按规则筛选（`rules_only` 参数）
+    - 支持按推理类型筛选（`inference_type` 参数）
+    - 返回 `llm_summary` 可直接用于 Agent 上下文
+  - **增强 `query_ontology` 工具** - 新增推理查询能力
+    - `include_inferences=true` 时附加推理结果
+    - `inference_rules` 参数指定推理规则子集
+    - 返回 `inference_summary` 可读摘要
+  - **推理结果缓存** - `engine/cache.py`
+    - 内存级缓存，基于实体 IDs 哈希 + 规则配置
+    - 实体/关系变更时自动失效相关缓存
+    - LRU 淘汰策略 + TTL 过期
+    - 缓存命中率统计
+  - **一致性检查器增强** - 新增 2 项检查
+    - 循环依赖检测（递归 CTE 检测 A->B->...->A）
+    - 置信度异常检测（过低置信度 + 深度过深但高置信度）
+    - 扩展不兼容类型组合
+    - 新增 implements + conflicts_with 矛盾检测
+  - **自监督反馈工作流** - `engine/feedback.py` + `tools/manage_feedback.py`
+    - `feedback_log` 表自动记录每次 `parse_prd_v2` 的预测
+    - `manage_feedback` MCP 工具（submit / stats / list）
+    - `prediction_id` 串联预测与验证结果
+    - 反馈统计（准确率 / 待验证数 / 按来源分组）
+  - **Web 看板增强** - 新增 5 个 API 端点
+    - `POST /api/reasoning/run` - 在线运行推理
+    - `GET /api/cache/stats` - 缓存统计
+    - `POST /api/cache/clear` - 清除缓存
+    - `GET /api/feedback/stats` - 反馈统计
+    - `GET /api/feedback/list` - 反馈列表
+    - `POST /api/feedback/submit` - 提交反馈
+  - **16 个单元测试全部通过**（8 原有 + 8 Phase 4 新增）
+
+### Phase 5: 待开发
+
+- [ ] Web 看板前端页面完善（推理结果可视化展示）
+- [ ] 自监督学习自动参数调优（基于反馈数据校准规则参数）
+- [ ] 推理规则可配置化（YAML 配置规则参数）
+- [ ] 多项目本体联邦
+- [ ] 代码一致性检查工具（`check_consistency` MCP 工具）
+
 ## 自监督迭代框架（Phase 2+）
 
 不在 MVP 范围内，详见 wiki 方案文档 `wiki/ideas/2026-07-07-prd-ontology-mcp-plugin.md`。
@@ -239,3 +340,15 @@ prd-ontology-mcp/
 - [PRD Ontology MCP 插件方案（wiki）](../wiki/ideas/2026-07-07-prd-ontology-mcp-plugin.md)
 - [Palantir Ontology 深度调研](../wiki/tech/ai-coding/2026-07-08-palantir-ontology-deep-dive.md)
 - [类似 Palantir 的开源代码分析项目调研](../wiki/tech/ai-coding/2026-07-06-ontology-like-code-analysis-projects.md)
+- [推理引擎开发计划](REASONING_ENGINE_DEV_PLAN.md)
+
+## 更新历史
+
+| 日期 | 更新内容 |
+|------|----------|
+| 2026-07-07 | 项目创建，MVP 方案设计 |
+| 2026-07-14 | MVP 阶段完成，四阶段流水线 + 5 个 MCP 工具 |
+| 2026-07-23 | 规则推理引擎完成，LLM 调用从 6 次降至 2 次，7 大规则 + 一致性检查 |
+| 2026-07-24 | SQLite 存储层 + MCP 服务器完成 |
+| 2026-07-28 | 端到端集成测试通过（PRD 276→5438 字符，67 条推理）| Schema 层增广完成（类型层次 + 关系语义 + manage_schema 工具）| 清理历史仓库 PRDOntology/ + prd-ontology-mcp/，统一到 CodingOntology |
+| 2026-07-30 | Phase 4 完成：reason_ontology 工具 + query_ontology 推理增强 + 缓存 + 一致性检查增强 + 自监督反馈工作流 + Web API 增强 |

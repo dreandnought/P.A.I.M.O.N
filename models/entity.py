@@ -99,6 +99,8 @@ def create_entity(
     db_path=None,
 ):
     """创建实体。"""
+    from engine.cache import invalidate_on_entity_change
+
     conn = get_connection(db_path)
     conn.execute(
         """
@@ -111,6 +113,7 @@ def create_entity(
     )
     conn.commit()
     conn.close()
+    invalidate_on_entity_change(entity_id)
     return get_entity(entity_id, db_path)
 
 
@@ -119,12 +122,13 @@ def update_entity(entity_id, updates, db_path=None):
 
     updates 为字典，可包含：name, description, type_id, status, confidence, tags 等。
     """
+    from engine.cache import invalidate_on_entity_change
+
     allowed = {"name", "description", "type_id", "status", "confidence", "tags", "properties", "source_ref"}
     filtered = {k: v for k, v in updates.items() if k in allowed}
     if not filtered:
         return get_entity(entity_id, db_path)
 
-    filtered["updated_at"] = "datetime('now')"
     set_clause = ", ".join(f"{k} = ?" for k in filtered if k != "updated_at")
     # 手动追加 updated_at
     set_clause += ", updated_at = datetime('now')"
@@ -138,16 +142,28 @@ def update_entity(entity_id, updates, db_path=None):
     )
     conn.commit()
     conn.close()
+    invalidate_on_entity_change(entity_id)
     return get_entity(entity_id, db_path)
 
 
 def delete_entity(entity_id, db_path=None):
     """删除实体及其关联关系。"""
+    from engine.cache import invalidate_on_entity_change
+
     conn = get_connection(db_path)
+    # 先找出所有关联实体 ID，用于失效缓存
+    related_rows = conn.execute(
+        "SELECT DISTINCT source_id FROM relations WHERE target_id = ? "
+        "UNION SELECT DISTINCT target_id FROM relations WHERE source_id = ?",
+        (entity_id, entity_id)
+    ).fetchall()
     conn.execute("DELETE FROM relations WHERE source_id = ? OR target_id = ?", (entity_id, entity_id))
     cur = conn.execute("DELETE FROM entities WHERE id = ?", (entity_id,))
     conn.commit()
     conn.close()
+    invalidate_on_entity_change(entity_id)
+    for r in related_rows:
+        invalidate_on_entity_change(r["source_id"] if "source_id" in r.keys() else r[0])
     return cur.rowcount > 0
 
 
