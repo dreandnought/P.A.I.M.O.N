@@ -1,4 +1,6 @@
-# Coding Ontology MCP
+# PRD Algorithm of Intelligent Matrix and Ontology Network
+
+一个面向Coding场景的Ontology
 
 为 Coding Agent（Claude Code、Cline 等）提供 PRD 增强理解的 MCP 插件。
 
