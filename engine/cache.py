@@ -48,16 +48,21 @@ class ReasoningCache:
             "invalidations": 0,
         }
 
-    def _make_key(self, entity_ids: list, rules_config: Optional[list] = None) -> str:
+    def _make_key(self, entity_ids: list, rules_config: Optional[list] = None,
+                  time_config: Optional[tuple] = None) -> str:
         """生成缓存键"""
         sorted_ids = sorted(entity_ids)
         rules_str = ",".join(sorted(rules_config)) if rules_config else "all"
-        raw = f"{sorted_ids}|{rules_str}"
+        time_str = ""
+        if time_config:
+            time_str = f"|future={int(time_config[0])},expired={int(time_config[1])}"
+        raw = f"{sorted_ids}|{rules_str}{time_str}"
         return hashlib.md5(raw.encode()).hexdigest()
 
-    def get(self, entity_ids: list, rules_config: Optional[list] = None) -> Optional[dict]:
+    def get(self, entity_ids: list, rules_config: Optional[list] = None,
+            time_config: Optional[tuple] = None) -> Optional[dict]:
         """查询缓存"""
-        key = self._make_key(entity_ids, rules_config)
+        key = self._make_key(entity_ids, rules_config, time_config)
         entry = self._cache.get(key)
 
         if entry is None:
@@ -75,7 +80,8 @@ class ReasoningCache:
         return entry.result
 
     def put(self, entity_ids: list, result: dict, rules_config: Optional[list] = None,
-            involved_entities: Optional[list] = None):
+            involved_entities: Optional[list] = None,
+            time_config: Optional[tuple] = None):
         """写入缓存
 
         Args:
@@ -83,8 +89,9 @@ class ReasoningCache:
             result: 推理结果
             rules_config: 规则配置（缓存键的一部分）
             involved_entities: 所有涉及的实体 IDs（用于精准失效缓存）
+            time_config: (include_future, include_expired) 时间过滤配置（缓存键的一部分）
         """
-        key = self._make_key(entity_ids, rules_config)
+        key = self._make_key(entity_ids, rules_config, time_config)
 
         # 容量检查：LRU 淘汰
         if len(self._cache) >= self.max_entries:

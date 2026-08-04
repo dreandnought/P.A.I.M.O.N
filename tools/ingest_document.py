@@ -254,6 +254,8 @@ def _execute_plan(plan, title, content, db_path):
             source_doc_id=doc_id,
             metadata={"description": r.get("description", "")},
             db_path=db_path,
+            valid_from=r.get("valid_from"),
+            valid_until=r.get("valid_until"),
         )
         created_relations.append(relation)
 

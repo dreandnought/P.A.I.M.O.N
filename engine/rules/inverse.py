@@ -11,6 +11,7 @@
 from engine.core import Rule
 from engine.result import InferenceResult
 from models.schema import get_connection
+from datetime import datetime, timezone
 
 
 # 逆关系映射表（正向 -> 逆向名称）
@@ -46,13 +47,24 @@ class InverseRelationRule(Rule):
         conn.close()
         return row["cnt"] > 0
 
-    def apply(self, entity_ids, db_path=None):
+    def apply(self, entity_ids, db_path=None, include_future=False, include_expired=False):
         conn = get_connection(db_path)
         results = []
         entity_set = set(entity_ids)
+        now = datetime.now(timezone.utc).isoformat()
 
         for forward, inverse in INVERSE_MAP.items():
             placeholders = ",".join("?" * len(entity_ids))
+
+            conditions = []
+            params = [forward] + list(entity_ids) + list(entity_ids)
+            if not include_future:
+                conditions.append("(r.valid_from IS NULL OR r.valid_from <= ?)")
+                params.append(now)
+            if not include_expired:
+                conditions.append("(r.valid_until IS NULL OR r.valid_until > ?)")
+                params.append(now)
+            time_sql = (" AND " + " AND ".join(conditions)) if conditions else ""
 
             rows = conn.execute(
                 f"""SELECT r.source_id, r.target_id, r.confidence,
@@ -61,8 +73,8 @@ class InverseRelationRule(Rule):
                     JOIN entities e1 ON r.source_id = e1.id
                     JOIN entities e2 ON r.target_id = e2.id
                     WHERE r.type_id = ?
-                    AND (r.source_id IN ({placeholders}) OR r.target_id IN ({placeholders}))""",
-                [forward] + list(entity_ids) + list(entity_ids)
+                    AND (r.source_id IN ({placeholders}) OR r.target_id IN ({placeholders})){time_sql}""",
+                params
             ).fetchall()
 
             for row in rows:

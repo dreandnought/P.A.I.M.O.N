@@ -3,8 +3,14 @@
 
 from abc import ABC, abstractmethod
 from typing import Optional
+from datetime import datetime, timezone
 from .result import InferenceResult, ReasoningOutput
 from .cache import get_cache
+
+
+def _now_iso():
+    """当前 UTC ISO 8601 时间字符串。"""
+    return datetime.now(timezone.utc).isoformat()
 
 
 class Rule(ABC):
@@ -37,8 +43,10 @@ class Checker(ABC):
 class ReasoningEngine:
     """推理引擎：管理规则的注册、执行和结果汇总"""
 
-    def __init__(self, db_path=None):
+    def __init__(self, db_path=None, include_future=False, include_expired=False):
         self.db_path = db_path
+        self.include_future = include_future
+        self.include_expired = include_expired
         self.rules: list = []
         self.checkers: list = []
 
@@ -71,8 +79,9 @@ class ReasoningEngine:
 
         # 缓存检查
         cache = get_cache()
+        time_config = (self.include_future, self.include_expired)
         if use_cache:
-            cached = cache.get(entity_ids)
+            cached = cache.get(entity_ids, time_config=time_config)
             if cached is not None:
                 # 从缓存重建 ReasoningOutput
                 return self._from_cache(cached)
@@ -83,11 +92,12 @@ class ReasoningEngine:
 
         # 1. 执行所有规则
         rules_executed = 0
+        filter_kwargs = {"include_future": self.include_future, "include_expired": self.include_expired}
         for rule in self.rules:
             try:
                 if not rule.is_applicable(entity_ids, self.db_path):
                     continue
-                results = rule.apply(entity_ids, self.db_path)
+                results = rule.apply(entity_ids, self.db_path, **filter_kwargs)
                 all_inferences.extend(results)
                 rules_executed += 1
                 # 收集推理涉及的实体
@@ -102,7 +112,7 @@ class ReasoningEngine:
         # 2. 执行一致性检查
         for checker in self.checkers:
             try:
-                conflicts = checker.check(entity_ids, all_inferences, self.db_path)
+                conflicts = checker.check(entity_ids, all_inferences, self.db_path, **filter_kwargs)
                 all_conflicts.extend(conflicts)
             except Exception as e:
                 import sys
@@ -151,7 +161,7 @@ class ReasoningEngine:
             for conf in all_conflicts:
                 all_involved_ids.add(conf.source_entity_id)
                 all_involved_ids.add(conf.target_entity_id)
-            cache.put(entity_ids, output.to_dict(), involved_entities=list(all_involved_ids))
+            cache.put(entity_ids, output.to_dict(), involved_entities=list(all_involved_ids), time_config=time_config)
 
         return output
 
@@ -204,6 +214,7 @@ class ReasoningEngine:
         Returns:
             dict: {"entities": [...], "relations": [...]}
         """
+        from models.relation import _time_filter_sql
         from models.schema import get_connection
 
         if not entity_ids:
@@ -213,6 +224,11 @@ class ReasoningEngine:
 
         # 可传递关系类型（用于 BFS 多跳扩展）
         transitive_types = ["depends_on", "contains", "derived_from"]
+
+        # 时间过滤条件（用于直接关系查询）
+        time_filter, time_params = _time_filter_sql(
+            "r", self.include_future, self.include_expired
+        )
 
         # 步骤1：BFS 多跳扩展——从入口实体出发，沿可传递关系向外扩展
         expanded_ids = set(entity_ids)
@@ -224,8 +240,9 @@ class ReasoningEngine:
 
             # 1.1 一跳直接关系（全部类型）
             rows = conn.execute(
-                """SELECT r.id, r.type_id, r.source_id, r.target_id,
+                f"""SELECT r.id, r.type_id, r.source_id, r.target_id,
                           r.confidence, r.weight,
+                          r.valid_from, r.valid_until,
                           rt.name AS relation_type,
                           rt.symmetric, rt.transitive,
                           e1.name AS source_name,
@@ -236,8 +253,8 @@ class ReasoningEngine:
                    JOIN entities e2 ON r.target_id = e2.id
                    WHERE (r.source_id = ? OR r.target_id = ?)
                      AND e1.status = 'active'
-                     AND e2.status = 'active'""",
-                (eid, eid)
+                     AND e2.status = 'active'{time_filter}""",
+                [eid, eid] + time_params
             ).fetchall()
             for r in rows:
                 rkey = r["id"]
@@ -254,6 +271,8 @@ class ReasoningEngine:
                         "weight": r["weight"],
                         "symmetric": bool(r["symmetric"]),
                         "transitive": bool(r["transitive"]),
+                        "valid_from": r["valid_from"],
+                        "valid_until": r["valid_until"],
                     })
                 # 收集对端实体
                 related_id = r["target_id"] if r["source_id"] == eid else r["source_id"]
@@ -263,20 +282,33 @@ class ReasoningEngine:
             # 1.2 多跳 BFS（仅可传递关系类型）
             for rtype in transitive_types:
                 try:
+                    future_cond = "" if self.include_future else " AND (r.valid_from IS NULL OR r.valid_from <= ?) "
+                    expired_cond = "" if self.include_expired else " AND (r.valid_until IS NULL OR r.valid_until > ?) "
+                    bfs_params = [eid, rtype]
+                    if not self.include_future:
+                        bfs_params.append(_now_iso())
+                    if not self.include_expired:
+                        bfs_params.append(_now_iso())
+                    bfs_params += [rtype, max_depth]
+                    if not self.include_future:
+                        bfs_params.append(_now_iso())
+                    if not self.include_expired:
+                        bfs_params.append(_now_iso())
+
                     rows = conn.execute(
-                        """WITH RECURSIVE transitive_bfs AS (
+                        f"""WITH RECURSIVE transitive_bfs AS (
                             SELECT target_id, 1 AS depth
-                            FROM relations
+                            FROM relations r
                             WHERE source_id = ? AND type_id = (
                                 SELECT id FROM relation_types WHERE name = ?
-                            )
+                            ){future_cond}{expired_cond}
                             UNION ALL
                             SELECT r.target_id, t.depth + 1
                             FROM relations r
                             JOIN transitive_bfs t ON r.source_id = t.target_id
                             WHERE r.type_id = (
                                 SELECT id FROM relation_types WHERE name = ?
-                            ) AND t.depth < ?
+                            ) AND t.depth < ?{future_cond}{expired_cond}
                         )
                         SELECT DISTINCT tb.target_id, tb.depth,
                                e.name AS target_name,
@@ -287,7 +319,7 @@ class ReasoningEngine:
                         WHERE tb.target_id != ?
                           AND e.status = 'active'
                         ORDER BY tb.depth""",
-                        (eid, rtype, rtype, max_depth, eid)
+                        bfs_params + [eid]
                     ).fetchall()
 
                     for row in rows:
@@ -342,6 +374,7 @@ class ReasoningEngine:
             rows = conn.execute(
                 f"""SELECT r.id, r.type_id, r.source_id, r.target_id,
                           r.confidence, r.weight,
+                          r.valid_from, r.valid_until,
                           rt.name AS relation_type,
                           rt.symmetric, rt.transitive,
                           e1.name AS source_name,
@@ -353,8 +386,8 @@ class ReasoningEngine:
                    WHERE r.source_id IN ({placeholders})
                      AND r.target_id IN ({placeholders})
                      AND e1.status = 'active'
-                     AND e2.status = 'active'""",
-                all_ids + all_ids
+                     AND e2.status = 'active'{time_filter}""",
+                all_ids + all_ids + time_params
             ).fetchall()
             for r in rows:
                 if r["id"] not in existing_rids:
@@ -369,6 +402,8 @@ class ReasoningEngine:
                         "weight": r["weight"],
                         "symmetric": bool(r["symmetric"]),
                         "transitive": bool(r["transitive"]),
+                        "valid_from": r["valid_from"],
+                        "valid_until": r["valid_until"],
                     })
 
         conn.close()

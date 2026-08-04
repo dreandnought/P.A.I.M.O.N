@@ -11,6 +11,7 @@
 from engine.core import Rule
 from engine.result import InferenceResult
 from models.schema import get_connection
+from datetime import datetime, timezone
 
 
 class ConflictDetectionRule(Rule):
@@ -30,9 +31,20 @@ class ConflictDetectionRule(Rule):
         conn.close()
         return row["cnt"] > 0
 
-    def apply(self, entity_ids, db_path=None):
+    def apply(self, entity_ids, db_path=None, include_future=False, include_expired=False):
         conn = get_connection(db_path)
         results = []
+        now = datetime.now(timezone.utc).isoformat()
+
+        # 时间过滤条件
+        time_sql = ""
+        time_params = []
+        if not include_future:
+            time_sql += " AND (r.valid_from IS NULL OR r.valid_from <= ?) "
+            time_params.append(now)
+        if not include_expired:
+            time_sql += " AND (r.valid_until IS NULL OR r.valid_until > ?) "
+            time_params.append(now)
 
         for eid in entity_ids:
             entity_row = conn.execute(
@@ -44,20 +56,20 @@ class ConflictDetectionRule(Rule):
 
             # 模式1: depends_on 且 conflicts_with 同一实体
             deps = conn.execute(
-                """SELECT r.target_id, e.name AS target_name
+                f"""SELECT r.target_id, e.name AS target_name
                    FROM relations r JOIN entities e ON r.target_id = e.id
-                   WHERE r.source_id = ? AND r.type_id = 'depends_on'""",
-                (eid,)
+                   WHERE r.source_id = ? AND r.type_id = 'depends_on'{time_sql}""",
+                [eid] + time_params
             ).fetchall()
 
             conflicts = conn.execute(
-                """SELECT CASE WHEN r.source_id = ? THEN r.target_id ELSE r.source_id END AS other_id,
+                f"""SELECT CASE WHEN r.source_id = ? THEN r.target_id ELSE r.source_id END AS other_id,
                           e.name AS other_name
                    FROM relations r
                    JOIN entities e ON
                      (CASE WHEN r.source_id = ? THEN r.target_id ELSE r.source_id END) = e.id
-                   WHERE (r.source_id = ? OR r.target_id = ?) AND r.type_id = 'conflicts_with'""",
-                (eid, eid, eid, eid)
+                   WHERE (r.source_id = ? OR r.target_id = ?) AND r.type_id = 'conflicts_with'{time_sql}""",
+                [eid, eid, eid, eid] + time_params
             ).fetchall()
 
             conflict_targets = {c["other_id"] for c in conflicts}
@@ -75,17 +87,30 @@ class ConflictDetectionRule(Rule):
                     ))
 
             # 模式2: 循环包含检测（A contains B, B contains ... A）
+            future_cond = "" if include_future else " AND (r.valid_from IS NULL OR r.valid_from <= ?) "
+            expired_cond = "" if include_expired else " AND (r.valid_until IS NULL OR r.valid_until > ?) "
+            cycle_params = [eid]
+            if not include_future:
+                cycle_params.append(now)
+            if not include_expired:
+                cycle_params.append(now)
+            if not include_future:
+                cycle_params.append(now)
+            if not include_expired:
+                cycle_params.append(now)
+            cycle_params.append(eid)
+
             cycle = conn.execute(
-                """WITH RECURSIVE chain AS (
-                    SELECT target_id, 1 AS depth FROM relations
-                    WHERE source_id = ? AND type_id = 'contains'
+                f"""WITH RECURSIVE chain AS (
+                    SELECT r.target_id, 1 AS depth FROM relations r
+                    WHERE r.source_id = ? AND r.type_id = 'contains'{future_cond}{expired_cond}
                     UNION ALL
                     SELECT r.target_id, c.depth + 1 FROM relations r
                     JOIN chain c ON r.source_id = c.target_id
-                    WHERE r.type_id = 'contains' AND c.depth < 20
+                    WHERE r.type_id = 'contains' AND c.depth < 20{future_cond}{expired_cond}
                 )
                 SELECT target_id FROM chain WHERE target_id = ? LIMIT 1""",
-                (eid, eid)
+                cycle_params
             ).fetchone()
 
             if cycle:
@@ -102,10 +127,10 @@ class ConflictDetectionRule(Rule):
 
             # 模式3: implements 且 conflicts_with 同一实体
             impls = conn.execute(
-                """SELECT r.target_id, e.name AS target_name
+                f"""SELECT r.target_id, e.name AS target_name
                    FROM relations r JOIN entities e ON r.target_id = e.id
-                   WHERE r.source_id = ? AND r.type_id = 'implements'""",
-                (eid,)
+                   WHERE r.source_id = ? AND r.type_id = 'implements'{time_sql}""",
+                [eid] + time_params
             ).fetchall()
 
             for impl in impls:
@@ -124,16 +149,16 @@ class ConflictDetectionRule(Rule):
             # 模式4: constrains 且 causes 同一实体
             constrains_targets = {
                 r["target_id"] for r in conn.execute(
-                    """SELECT r.target_id FROM relations r
-                       WHERE r.source_id = ? AND r.type_id = 'constrains'""",
-                    (eid,)
+                    f"""SELECT r.target_id FROM relations r
+                       WHERE r.source_id = ? AND r.type_id = 'constrains'{time_sql}""",
+                    [eid] + time_params
                 ).fetchall()
             }
             causes_targets = {
                 r["target_id"] for r in conn.execute(
-                    """SELECT r.target_id FROM relations r
-                       WHERE r.source_id = ? AND r.type_id = 'causes'""",
-                    (eid,)
+                    f"""SELECT r.target_id FROM relations r
+                       WHERE r.source_id = ? AND r.type_id = 'causes'{time_sql}""",
+                    [eid] + time_params
                 ).fetchall()
             }
 

@@ -65,6 +65,8 @@ CREATE TABLE IF NOT EXISTS relations (
     source          TEXT NOT NULL DEFAULT 'manual',
     source_doc_id   TEXT,
     metadata        TEXT DEFAULT '{}',
+    valid_from      TEXT,
+    valid_until     TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(type_id, source_id, target_id)
@@ -75,6 +77,8 @@ CREATE INDEX IF NOT EXISTS idx_relations_target ON relations(target_id);
 CREATE INDEX IF NOT EXISTS idx_relations_type ON relations(type_id);
 CREATE INDEX IF NOT EXISTS idx_relations_st ON relations(source_id, type_id);
 CREATE INDEX IF NOT EXISTS idx_relations_ts ON relations(target_id, type_id);
+CREATE INDEX IF NOT EXISTS idx_relations_valid_from ON relations(valid_from);
+CREATE INDEX IF NOT EXISTS idx_relations_valid_until ON relations(valid_until);
 
 -- 来源文档表
 CREATE TABLE IF NOT EXISTS documents (
@@ -158,4 +162,26 @@ def get_connection(db_path=None):
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # 自动迁移：确保 relations 表包含时间字段（幂等）
+    _migrate_relation_time_fields(conn)
     return conn
+
+
+def _migrate_relation_time_fields(conn):
+    """自动迁移 relations 表，补充 valid_from / valid_until 字段（幂等）。"""
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(relations)").fetchall()}
+        changed = False
+        if "valid_from" not in cols:
+            conn.execute("ALTER TABLE relations ADD COLUMN valid_from TEXT")
+            changed = True
+        if "valid_until" not in cols:
+            conn.execute("ALTER TABLE relations ADD COLUMN valid_until TEXT")
+            changed = True
+        if changed:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_relations_valid_from ON relations(valid_from)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_relations_valid_until ON relations(valid_until)")
+            conn.commit()
+    except Exception:
+        # 迁移失败不应阻塞连接（例如表结构异常时静默降级）
+        pass

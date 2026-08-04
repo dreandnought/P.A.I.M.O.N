@@ -10,6 +10,7 @@
 from engine.core import Checker
 from engine.result import InferenceResult
 from models.schema import get_connection
+from datetime import datetime, timezone
 
 
 # 类型兼容性规则：哪些关系类型可以连接哪些实体类型对
@@ -64,21 +65,32 @@ class ConsistencyChecker(Checker):
 
     name = "consistency_checker"
 
-    def check(self, entity_ids, inferences, db_path=None):
+    def check(self, entity_ids, inferences, db_path=None, include_future=False, include_expired=False):
         issues = []
-        issues.extend(self._check_type_compatibility(entity_ids, db_path))
+        issues.extend(self._check_type_compatibility(entity_ids, db_path, include_future, include_expired))
         issues.extend(self._check_orphan_entities(entity_ids, db_path))
         issues.extend(self._check_inference_consistency(inferences, db_path))
-        issues.extend(self._check_circular_dependencies(entity_ids, db_path))
+        issues.extend(self._check_circular_dependencies(entity_ids, db_path, include_future, include_expired))
         issues.extend(self._check_confidence_anomalies(inferences, db_path))
         return issues
 
-    def _check_type_compatibility(self, entity_ids, db_path=None):
+    def _check_type_compatibility(self, entity_ids, db_path=None, include_future=False, include_expired=False):
         """检查关系两端实体类型是否兼容"""
         conn = get_connection(db_path)
         issues = []
+        now = datetime.now(timezone.utc).isoformat()
 
         placeholders = ",".join("?" * len(entity_ids))
+        conditions = []
+        params = list(entity_ids) + list(entity_ids)
+        if not include_future:
+            conditions.append("(r.valid_from IS NULL OR r.valid_from <= ?)")
+            params.append(now)
+        if not include_expired:
+            conditions.append("(r.valid_until IS NULL OR r.valid_until > ?)")
+            params.append(now)
+        time_sql = (" AND " + " AND ".join(conditions)) if conditions else ""
+
         rows = conn.execute(
             f"""SELECT r.source_id, r.target_id, r.type_id,
                       e1.type_id AS source_type, e2.type_id AS target_type,
@@ -86,8 +98,8 @@ class ConsistencyChecker(Checker):
                FROM relations r
                JOIN entities e1 ON r.source_id = e1.id
                JOIN entities e2 ON r.target_id = e2.id
-               WHERE (r.source_id IN ({placeholders}) OR r.target_id IN ({placeholders}))""",
-            list(entity_ids) + list(entity_ids)
+               WHERE (r.source_id IN ({placeholders}) OR r.target_id IN ({placeholders})){time_sql}""",
+            params
         ).fetchall()
 
         for row in rows:
@@ -181,27 +193,43 @@ class ConsistencyChecker(Checker):
 
         return issues
 
-    def _check_circular_dependencies(self, entity_ids, db_path=None):
+    def _check_circular_dependencies(self, entity_ids, db_path=None, include_future=False, include_expired=False):
         """检测循环依赖链（A->B->C->A）"""
         conn = get_connection(db_path)
         issues = []
+        now = datetime.now(timezone.utc).isoformat()
+
+        future_cond = "" if include_future else " AND (r.valid_from IS NULL OR r.valid_from <= ?) "
+        expired_cond = "" if include_expired else " AND (r.valid_until IS NULL OR r.valid_until > ?) "
 
         for eid in entity_ids:
             # 使用递归 CTE 检测 depends_on 循环
             try:
+                # 参数顺序：初始CTE[source_id, valid_from?, valid_until?] + 递归CTE[valid_from?, valid_until?]
+                future_cond = "" if include_future else " AND (r.valid_from IS NULL OR r.valid_from <= ?) "
+                expired_cond = "" if include_expired else " AND (r.valid_until IS NULL OR r.valid_until > ?) "
+                params = [eid]
+                if not include_future:
+                    params.append(now)
+                if not include_expired:
+                    params.append(now)
+                if not include_future:
+                    params.append(now)
+                if not include_expired:
+                    params.append(now)
                 cycle = conn.execute(
-                    """WITH RECURSIVE dep_chain AS (
-                        SELECT target_id, 1 AS depth, source_id AS path_start
-                        FROM relations
-                        WHERE source_id = ? AND type_id = 'depends_on'
+                    f"""WITH RECURSIVE dep_chain AS (
+                        SELECT r.target_id, 1 AS depth, r.source_id AS path_start
+                        FROM relations r
+                        WHERE r.source_id = ? AND r.type_id = 'depends_on'{future_cond}{expired_cond}
                         UNION ALL
                         SELECT r.target_id, c.depth + 1, c.path_start
                         FROM relations r
                         JOIN dep_chain c ON r.source_id = c.target_id
-                        WHERE r.type_id = 'depends_on' AND c.depth < 20
+                        WHERE r.type_id = 'depends_on' AND c.depth < 20{future_cond}{expired_cond}
                     )
                     SELECT target_id, depth FROM dep_chain WHERE target_id = path_start LIMIT 1""",
-                    (eid,)
+                    params
                 ).fetchone()
 
                 if cycle:

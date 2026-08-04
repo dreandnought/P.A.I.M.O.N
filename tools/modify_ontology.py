@@ -157,6 +157,8 @@ def _execute_modify_plan(plan, db_path):
                 source="nlp_modify",
                 metadata={"description": r.get("description", "")},
                 db_path=db_path,
+                valid_from=r.get("valid_from"),
+                valid_until=r.get("valid_until"),
             )
             created_relations.append(relation)
         except Exception as ex:

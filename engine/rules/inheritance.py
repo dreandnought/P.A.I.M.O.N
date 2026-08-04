@@ -8,6 +8,7 @@
 from engine.core import Rule
 from engine.result import InferenceResult
 from models.schema import get_connection
+from datetime import datetime, timezone
 
 
 class InheritanceRule(Rule):
@@ -32,9 +33,20 @@ class InheritanceRule(Rule):
         conn.close()
         return row["cnt"] > 0
 
-    def apply(self, entity_ids, db_path=None):
+    def apply(self, entity_ids, db_path=None, include_future=False, include_expired=False):
         conn = get_connection(db_path)
         results = []
+        now = datetime.now(timezone.utc).isoformat()
+
+        # 时间过滤条件
+        time_sql = ""
+        time_params = []
+        if not include_future:
+            time_sql += " AND (r.valid_from IS NULL OR r.valid_from <= ?) "
+            time_params.append(now)
+        if not include_expired:
+            time_sql += " AND (r.valid_until IS NULL OR r.valid_until > ?) "
+            time_params.append(now)
 
         for eid in entity_ids:
             entity = conn.execute(
@@ -69,13 +81,13 @@ class InheritanceRule(Rule):
             # 3. 如果兄弟实体有共同的关系模式，推理当前实体可能也有类似关系
             for sibling in siblings:
                 sibling_relations = conn.execute(
-                    """SELECT r.type_id, r.target_id, r.confidence,
+                    f"""SELECT r.type_id, r.target_id, r.confidence,
                               e.name AS target_name
                        FROM relations r
                        JOIN entities e ON r.target_id = e.id
                        WHERE r.source_id = ?
-                       AND e.status = 'active'""",
-                    (sibling["id"],)
+                       AND e.status = 'active'{time_sql}""",
+                    [sibling["id"]] + time_params
                 ).fetchall()
 
                 for rel in sibling_relations:

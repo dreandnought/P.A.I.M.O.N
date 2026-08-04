@@ -18,6 +18,12 @@ from models.schema import get_connection, get_db_path, init_db
 from models.entity import get_entity, get_entity_by_name, search_entities, list_all_entities
 from models.relation import get_entity_relations
 from engine.cache import get_cache
+from datetime import datetime, timezone
+
+
+def _now_iso():
+    """当前 UTC ISO 8601 时间字符串。"""
+    return datetime.now(timezone.utc).isoformat()
 from engine.feedback import get_feedback_stats, list_recent_feedback
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -154,24 +160,40 @@ def api_entity_detail(entity_id):
     entity = get_entity(entity_id)
     if not entity:
         return jsonify({"error": "Entity not found"}), 404
-    relations = get_entity_relations(entity_id)
+    include_future = request.args.get("include_future", "false").lower() == "true"
+    include_expired = request.args.get("include_expired", "false").lower() == "true"
+    relations = get_entity_relations(entity_id, include_future=include_future, include_expired=include_expired)
     return jsonify({"entity": entity, "relations": relations})
 
 
 @app.route("/api/relations")
 def api_relations():
     """List all relations."""
+    include_future = request.args.get("include_future", "false").lower() == "true"
+    include_expired = request.args.get("include_expired", "false").lower() == "true"
     conn = get_connection()
+    conditions = []
+    params = []
+    if not include_future:
+        conditions.append("(r.valid_from IS NULL OR r.valid_from <= ?)")
+        params.append(_now_iso())
+    if not include_expired:
+        conditions.append("(r.valid_until IS NULL OR r.valid_until > ?)")
+        params.append(_now_iso())
+    where_sql = (" WHERE " + " AND ".join(conditions)) if conditions else ""
     rows = conn.execute(
         "SELECT r.id, r.type_id, rt.name AS type_name, "
         "r.source_id, r.target_id, r.confidence, r.weight, r.metadata, "
+        "r.valid_from, r.valid_until, "
         "se.name AS source_name, se.type_id AS source_type, "
         "te.name AS target_name, te.type_id AS target_type "
         "FROM relations r "
         "JOIN relation_types rt ON r.type_id = rt.id "
         "JOIN entities se ON r.source_id = se.id "
         "JOIN entities te ON r.target_id = te.id "
-        "ORDER BY r.confidence DESC"
+        f"{where_sql} "
+        "ORDER BY r.confidence DESC",
+        params,
     ).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])

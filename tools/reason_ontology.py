@@ -38,9 +38,10 @@ RULE_REGISTRY = {
 }
 
 
-def _build_engine(db_path=None, rules_only: Optional[List[str]] = None):
+def _build_engine(db_path=None, rules_only: Optional[List[str]] = None,
+                   include_future: bool = False, include_expired: bool = False):
     """构建推理引擎，可选择只注册部分规则。"""
-    engine = ReasoningEngine(db_path=db_path)
+    engine = ReasoningEngine(db_path=db_path, include_future=include_future, include_expired=include_expired)
 
     if rules_only:
         for rule_name in rules_only:
@@ -102,6 +103,8 @@ def register(mcp):
         inference_type: Optional[str] = None,
         include_conflicts: bool = True,
         include_subgraph: bool = False,
+        include_future: bool = False,
+        include_expired: bool = False,
         max_depth: int = 5,
         db_path: Optional[str] = None,
     ) -> dict:
@@ -122,6 +125,12 @@ def register(mcp):
         | `type_inheritance` | 兄弟实体共性关系推导 |
         | `conflict_detection` | 4 种矛盾模式检测 |
 
+        ## 时间关系过滤（Phase 5）
+
+        默认推理只基于当前已生效的实关系。如需纳入未来/过期关系：
+        - `include_future=true`：推理时纳入未来生效的虚关系
+        - `include_expired=true`：推理时纳入已过期关系
+
         ## 输入方式（三选一）
 
         1. `entity_ids`: 直接传入实体 ID 列表（如 `["func:user_login", "mod:auth_module"]`）
@@ -137,6 +146,8 @@ def register(mcp):
         - `inference_type`: 筛选推理类型（`dependency` / `constraint` / `impact` / `conflict`）
         - `include_conflicts`: 是否包含一致性检查结果（默认 true）
         - `include_subgraph`: 是否返回推理子图（默认 false，减少输出体积）
+        - `include_future`: 是否包含未来生效的虚关系（默认 false）
+        - `include_expired`: 是否包含已过期关系（默认 false）
         - `max_depth`: 推理最大深度（默认 5，影响 BFS 遍历深度）
         - `db_path`: 可选，Ontology SQLite 数据库路径
 
@@ -162,7 +173,7 @@ def register(mcp):
             }
 
         # 构建引擎
-        engine = _build_engine(db_path, rules_only)
+        engine = _build_engine(db_path, rules_only, include_future=include_future, include_expired=include_expired)
 
         # 执行推理
         output = engine.run(resolved_ids)

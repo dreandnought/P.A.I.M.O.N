@@ -7,6 +7,7 @@
 from engine.core import Rule
 from engine.result import InferenceResult
 from models.schema import get_connection
+from datetime import datetime, timezone
 
 
 class ConstraintPropagationRule(Rule):
@@ -28,41 +29,59 @@ class ConstraintPropagationRule(Rule):
         conn.close()
         return row["cnt"] > 0
 
-    def apply(self, entity_ids, db_path=None):
+    def apply(self, entity_ids, db_path=None, include_future=False, include_expired=False):
         conn = get_connection(db_path)
         results = []
+        now = datetime.now(timezone.utc).isoformat()
 
         for eid in entity_ids:
-            # 1. 找到直接约束当前实体的约束
+            # 1. 找到直接约束当前实体的约束（加时间过滤）
+            conditions = []
+            cparams = [eid]
+            if not include_future:
+                conditions.append("(r.valid_from IS NULL OR r.valid_from <= ?)")
+                cparams.append(now)
+            if not include_expired:
+                conditions.append("(r.valid_until IS NULL OR r.valid_until > ?)")
+                cparams.append(now)
+            time_sql = (" AND " + " AND ".join(conditions)) if conditions else ""
+
             constraints = conn.execute(
-                """SELECT r.source_id AS constraint_source, r.confidence,
+                f"""SELECT r.source_id AS constraint_source, r.confidence,
                           e1.name AS constraint_name,
                           e2.name AS constrained_name
                    FROM relations r
                    JOIN entities e1 ON r.source_id = e1.id
                    JOIN entities e2 ON r.target_id = e2.id
-                   WHERE r.target_id = ? AND r.type_id = 'constrains'""",
-                (eid,)
+                   WHERE r.target_id = ? AND r.type_id = 'constrains'{time_sql}""",
+                cparams
             ).fetchall()
 
             if not constraints:
                 continue
 
-            # 2. 找到当前实体包含的所有子实体（递归）
+            # 2. 找到当前实体包含的所有子实体（递归，加时间过滤）
+            future_cond = "" if include_future else " AND (r.valid_from IS NULL OR r.valid_from <= ?) "
+            expired_cond = "" if include_expired else " AND (r.valid_until IS NULL OR r.valid_until > ?) "
+            cparams2 = [eid]
+            if not include_future:
+                cparams2.append(now)
+            if not include_expired:
+                cparams2.append(now)
             children = conn.execute(
-                """WITH RECURSIVE containment AS (
-                    SELECT target_id FROM relations
-                    WHERE source_id = ? AND type_id = 'contains'
+                f"""WITH RECURSIVE containment AS (
+                    SELECT r.target_id FROM relations r
+                    WHERE r.source_id = ? AND r.type_id = 'contains'{future_cond}{expired_cond}
                     UNION ALL
                     SELECT r.target_id FROM relations r
                     JOIN containment c ON r.source_id = c.target_id
-                    WHERE r.type_id = 'contains'
+                    WHERE r.type_id = 'contains'{future_cond}{expired_cond}
                 )
                 SELECT DISTINCT c.target_id, e.name AS child_name
                 FROM containment c
                 JOIN entities e ON c.target_id = e.id
                 WHERE e.status = 'active'""",
-                (eid,)
+                cparams2
             ).fetchall()
 
             # 3. 约束传播：父实体的约束传递给子实体

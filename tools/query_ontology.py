@@ -28,6 +28,8 @@ def register(mcp):
         limit: int = 10,
         include_inferences: bool = False,
         inference_rules: Optional[List[str]] = None,
+        include_future: bool = False,
+        include_expired: bool = False,
         db_path: Optional[str] = None,
     ) -> dict:
         """查询 Ontology 中的实体和关系，可选附加推理结果。
@@ -43,6 +45,12 @@ def register(mcp):
         返回额外的隐含依赖、约束、影响范围和冲突检测结果。
         适用于 Agent 需要了解实体完整关系网络的场景。
 
+        ## 时间关系过滤（Phase 5）
+
+        默认只返回当前已生效的实关系。如需包含未来/过期关系，设置：
+        - `include_future=true`：包含未来生效的虚关系
+        - `include_expired=true`：包含已过期关系
+
         ## Args
 
         - `entity_name`: 按实体名称查询
@@ -53,6 +61,8 @@ def register(mcp):
         - `include_inferences`: 是否附加推理引擎结果（默认 false）
         - `inference_rules`: 指定推理规则子集（如 ["transitive_closure", "impact_analysis"]），
           仅 include_inferences=true 时有效，默认执行全部规则
+        - `include_future`: 是否包含未来生效的虚关系（默认 false）
+        - `include_expired`: 是否包含已过期关系（默认 false）
         - `db_path`: 可选，Ontology SQLite 数据库路径
 
         ## Returns
@@ -72,7 +82,7 @@ def register(mcp):
             # 方案 B：按 ID 查询
             entity = get_entity(entity_id, db_path)
             if entity:
-                relations = get_entity_relations(entity_id, relation_types, db_path)
+                relations = get_entity_relations(entity_id, relation_types, db_path, include_future, include_expired)
                 target_entity_ids = [entity_id]
 
         elif entity_name:
@@ -80,7 +90,7 @@ def register(mcp):
             entity = get_entity_by_name(entity_name, db_path)
             if entity:
                 relations = get_entity_relations(
-                    entity["id"], relation_types, db_path
+                    entity["id"], relation_types, db_path, include_future, include_expired
                 )
                 target_entity_ids = [entity["id"]]
 
@@ -89,7 +99,7 @@ def register(mcp):
             matches = search_entities(query, limit, db_path)
             for e in matches:
                 entity_relations = get_entity_relations(
-                    e["id"], relation_types, db_path
+                    e["id"], relation_types, db_path, include_future, include_expired
                 )
                 search_results.append(
                     {
@@ -109,7 +119,7 @@ def register(mcp):
         if include_inferences and target_entity_ids:
             from tools.reason_ontology import _build_engine
 
-            engine = _build_engine(db_path, inference_rules)
+            engine = _build_engine(db_path, inference_rules, include_future=include_future, include_expired=include_expired)
             output = engine.run(target_entity_ids)
 
             result["inferences"] = [r.to_dict() for r in output.inferences]
