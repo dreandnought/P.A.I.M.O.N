@@ -106,61 +106,63 @@ def _build_ontology_context(db_path=None, include_schema=False) -> str:
     from models.schema import get_connection
 
     conn = get_connection(db_path)
-    rows = conn.execute(
-        "SELECT e.id, e.name, et.name AS type_name, e.description "
-        "FROM entities e JOIN entity_types et ON e.type_id = et.id "
-        "WHERE e.status = 'active' "
-        "ORDER BY e.type_id, e.name"
-    ).fetchall()
-    conn.close()
-
-    if not rows:
-        return "(当前 Ontology 中暂无实体)"
-
-    lines = []
-    for r in rows:
-        desc = r["description"] or ""
-        lines.append(f"- {r['id']} | {r['name']} ({r['type_name']}) | {desc[:80]}")
-
-    entity_text = "\n".join(lines)
-
-    if include_schema:
-        # 追加 Schema 层信息
-        schema_lines = ["\n### Schema 层信息"]
-
-        # 实体类型层次
-        et_rows = conn.execute(
-            """SELECT et.id, et.name, et.description, et.parent_id,
-                      (SELECT name FROM entity_types WHERE id = et.parent_id) AS parent_name
-               FROM entity_types et ORDER BY et.id"""
+    try:
+        rows = conn.execute(
+            "SELECT e.id, e.name, et.name AS type_name, e.description "
+            "FROM entities e JOIN entity_types et ON e.type_id = et.id "
+            "WHERE e.status = 'active' "
+            "ORDER BY e.type_id, e.name"
         ).fetchall()
-        schema_lines.append("\n实体类型层次:")
-        for r in et_rows:
-            parent_str = f" → {r['parent_name']}" if r['parent_name'] else " (根)"
-            schema_lines.append(f"- {r['id']} | {r['name']}{parent_str}")
 
-        # 关系类型语义
-        rt_rows = conn.execute(
-            """SELECT id, name, symmetric, transitive, domain_type, range_type
-               FROM relation_types ORDER BY id"""
-        ).fetchall()
-        schema_lines.append("\n关系类型语义:")
-        for r in rt_rows:
-            props = []
-            if r['symmetric']:
-                props.append("对称")
-            if r['transitive']:
-                props.append("传递")
-            if r['domain_type']:
-                props.append(f"domain={r['domain_type']}")
-            if r['range_type']:
-                props.append(f"range={r['range_type']}")
-            prop_str = f" ({', '.join(props)})" if props else ""
-            schema_lines.append(f"- {r['id']}{prop_str}")
+        if not rows:
+            return "(当前 Ontology 中暂无实体)"
 
-        return entity_text + "\n" + "\n".join(schema_lines)
+        lines = []
+        for r in rows:
+            desc = r["description"] or ""
+            lines.append(f"- {r['id']} | {r['name']} ({r['type_name']}) | {desc[:80]}")
 
-    return entity_text
+        entity_text = "\n".join(lines)
+
+        if include_schema:
+            # 追加 Schema 层信息
+            schema_lines = ["\n### Schema 层信息"]
+
+            # 实体类型层次
+            et_rows = conn.execute(
+                """SELECT et.id, et.name, et.description, et.parent_id,
+                          (SELECT name FROM entity_types WHERE id = et.parent_id) AS parent_name
+                   FROM entity_types et ORDER BY et.id"""
+            ).fetchall()
+            schema_lines.append("\n实体类型层次:")
+            for r in et_rows:
+                parent_str = f" → {r['parent_name']}" if r['parent_name'] else " (根)"
+                schema_lines.append(f"- {r['id']} | {r['name']}{parent_str}")
+
+            # 关系类型语义
+            rt_rows = conn.execute(
+                """SELECT id, name, symmetric, transitive, domain_type, range_type
+                   FROM relation_types ORDER BY id"""
+            ).fetchall()
+            schema_lines.append("\n关系类型语义:")
+            for r in rt_rows:
+                props = []
+                if r['symmetric']:
+                    props.append("对称")
+                if r['transitive']:
+                    props.append("传递")
+                if r['domain_type']:
+                    props.append(f"domain={r['domain_type']}")
+                if r['range_type']:
+                    props.append(f"range={r['range_type']}")
+                prop_str = f" ({', '.join(props)})" if props else ""
+                schema_lines.append(f"- {r['id']}{prop_str}")
+
+            return entity_text + "\n" + "\n".join(schema_lines)
+
+        return entity_text
+    finally:
+        conn.close()
 
 
 def _extract_json_blocks(text: str) -> list:
@@ -181,6 +183,71 @@ def _first_json_block(text: str):
         return json.loads(text.strip())
     except json.JSONDecodeError:
         return None
+
+
+def _now_utc_iso():
+    """返回当前 UTC 时间的 ISO 8601 字符串（供 prompt 注入）。"""
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+
+
+def _normalize_time_to_utc(text):
+    """将时间表达转为 UTC ISO 8601 字符串。
+
+    优先尝试直接解析为 ISO 8601（LLM 直接输出此格式）；
+    若失败，回退到 parse_human_time 解析自然语言（如 "3天后"、"三天后"）。
+    两者均失败时返回 None。
+    """
+    if not text:
+        return None
+    from datetime import datetime, timezone
+
+    raw = str(text).strip()
+    if not raw:
+        return None
+
+    # 1. 优先尝试 ISO 8601 解析（LLM 直接输出的格式）
+    try:
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc)
+        else:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
+    except (ValueError, TypeError):
+        pass
+
+    # 2. 回退：自然语言解析（parse_human_time 支持中文数字）
+    from models.time_parse import parse_human_time
+    dt_str = parse_human_time(raw)
+    if not dt_str:
+        return None
+    try:
+        dt = datetime.fromisoformat(dt_str)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc)
+        return dt.isoformat()
+    except (ValueError, TypeError):
+        return None
+
+
+def _scan_time_near_entity(content, entity_name, window=40):
+    """在原文中查找实体名附近的时间表达（回退用）。
+
+    在 content 中定位 entity_name 的位置，取前后 window 字符的片段，
+    用 extract_time_info 扫描时间表达。找到则返回时间表达原文，否则返回 None。
+    """
+    if not content or not entity_name:
+        return None
+    idx = content.find(entity_name)
+    if idx < 0:
+        return None
+    start = max(0, idx - window)
+    end = min(len(content), idx + len(entity_name) + window)
+    snippet = content[start:end]
+    from models.time_parse import extract_time_info
+    _, _, matched = extract_time_info(snippet)
+    return matched
 
 
 def extract_entities_and_relations(content: str, db_path=None) -> dict:
@@ -228,7 +295,8 @@ def extract_entities_and_relations(content: str, db_path=None) -> dict:
       "suggested_id": "func:user_login",
       "matched_entity_id": null,
       "confidence": 0.0,
-      "is_new": true
+      "is_new": true,
+      "available_from": null
     }
   ],
   "relations": [
@@ -262,8 +330,13 @@ def extract_entities_and_relations(content: str, db_path=None) -> dict:
 4. relation_type 仅限:depends_on、causes、constrains、impacts、conflicts_with、derived_from、implements、contains、refines、relates_to。
 5. 关系两端的 source_id/target_id 优先使用已有实体的 ID;若目标为新实体,则使用 suggested_id。
 6. 只抽取文本中明确提到、有较高置信度的实体和关系,不要过度推断。
+7. available_from: 当原文中提到该实体在未来某个时间点生效或发布(如"3天后发布"、"三天后将会发布"、"2026年Q3上线"、"下周生效")时,
+   你必须根据上方提供的"当前时间(UTC)"计算出绝对的 ISO 8601 UTC 时间戳,并填入 available_from 字段。
+   例如:当前时间是 2026-08-06T12:00:00+00:00,原文说"3天后发布",则 available_from 填 "2026-08-09T12:00:00+00:00"。
+   没有时间表达时填 null。该字段表示实体的生效时间,晚于当前时间时实体为"未来实体",其关系将自动成为虚关系。
+   重要:请仔细检查原文中是否有与实体相关的时间表达,不要遗漏。输出必须是 ISO 8601 格式,不要输出自然语言。
 
-7. [可选] Schema 分析:如果在文档中发现了现有类型无法覆盖的概念,或者发现现有关系语义需要调整,
+8. [可选] Schema 分析:如果在文档中发现了现有类型无法覆盖的概念,或者发现现有关系语义需要调整,
    请在 schema 字段中提出变更建议。只在有把握时才写,不确定的不写。
    - entity_types.create: 新增实体类型(需要 id, name, description, parent_id)
    - entity_types.update: 修改现有实体类型(需要 id, parent_id 等)
@@ -271,7 +344,10 @@ def extract_entities_and_relations(content: str, db_path=None) -> dict:
    - relation_types.update: 修改现有关系类型(需要 id, 和要修改的字段)
    如果不需要 Schema 变更,返回空对象。"""
 
-    user_prompt = f"""## 当前 Ontology 中的已知实体
+    user_prompt = f"""## 当前时间（UTC）
+{_now_utc_iso()}
+
+## 当前 Ontology 中的已知实体
 {ontology_context}
 
 ## 待分析的文本/文档
@@ -305,6 +381,7 @@ def extract_entities_and_relations(content: str, db_path=None) -> dict:
             "matched_entity_id": e.get("matched_entity_id") or None,
             "confidence": float(e.get("confidence", 0.8)),
             "is_new": bool(e.get("is_new", True)),
+            "available_from": e.get("available_from"),
         })
 
     valid_relation_types = {"depends_on", "causes", "constrains", "impacts", "conflicts_with", "derived_from", "implements", "contains", "refines", "relates_to"}
@@ -331,6 +408,18 @@ def extract_entities_and_relations(content: str, db_path=None) -> dict:
         schema = {}
     schema_entity_types = schema.get("entity_types", {}) if isinstance(schema.get("entity_types"), dict) else {}
     schema_relation_types = schema.get("relation_types", {}) if isinstance(schema.get("relation_types"), dict) else {}
+
+    # 后处理：校验/归一化 available_from 为 UTC ISO 8601
+    # LLM 应直接输出 ISO 8601；若输出自然语言则回退到 parse_human_time
+    # 若 LLM 未提取 available_from，尝试从原文中扫描实体名附近的时间表达
+    for e in cleaned_entities:
+        raw_af = e.get("available_from")
+        if raw_af:
+            e["available_from"] = _normalize_time_to_utc(raw_af)
+        else:
+            # 回退：在原文中查找实体名附近的时间表达
+            fallback_af = _scan_time_near_entity(content, e.get("name", ""))
+            e["available_from"] = _normalize_time_to_utc(fallback_af) if fallback_af else None
 
     return {
         "entities": cleaned_entities,
@@ -373,7 +462,7 @@ def plan_ontology_changes(
 {
   "entities": {
     "create": [
-      {"suggested_id": "func:wechat_login", "name": "微信登录", "type": "function", "description": "..."}
+      {"suggested_id": "func:wechat_login", "name": "微信登录", "type": "function", "description": "...", "available_from": null}
     ],
     "update": [
       {"entity_id": "func:user_login", "name": "用户登录", "description": "更新后的描述"}
@@ -413,8 +502,13 @@ def plan_ontology_changes(
 3. relation_type 仅限:depends_on、causes、constrains、impacts、conflicts_with、derived_from、implements、contains、refines、relates_to。
 4. 若用户描述不够明确,宁可少改也不要过度推断;delete 操作要特别谨慎。
 5. 若未提供目标实体 ID,由你自行判断要修改哪些实体。
+6. available_from: 当用户描述中提到实体在未来某个时间点生效或发布(如"3天后上线"、"三天后发布"、"下周生效")时,
+   你必须根据上方提供的"当前时间(UTC)"计算出绝对的 ISO 8601 UTC 时间戳,并填入 available_from 字段。
+   例如:当前时间是 2026-08-06T12:00:00+00:00,描述说"3天后上线",则 available_from 填 "2026-08-09T12:00:00+00:00"。
+   没有时间表达时填 null。该字段表示实体的生效时间,晚于当前时间时实体为"未来实体",其关系将自动成为虚关系。
+   重要:请仔细检查描述中是否有与实体相关的时间表达,不要遗漏。输出必须是 ISO 8601 格式,不要输出自然语言。
 
-6. [可选] Schema 层变更:如果用户要求修改类型层次(如"把function设为requirement的子类型")
+7. [可选] Schema 层变更:如果用户要求修改类型层次(如"把function设为requirement的子类型")
    或关系语义(如"新增一个triggers关系类型"),请在 schema 字段中填写。
    只在有把握时才写,不确定的不写。
    - entity_types.create: 新增实体类型(需要 id, name, description, parent_id)
@@ -429,7 +523,10 @@ def plan_ontology_changes(
     if target_entity_context:
         target_hint += f"目标实体上下文:\n{target_entity_context}\n"
 
-    user_prompt = f"""## 当前 Ontology 中的已知实体
+    user_prompt = f"""## 当前时间（UTC）
+{_now_utc_iso()}
+
+## 当前 Ontology 中的已知实体
 {ontology_context}
 {target_hint}
 ## 用户的修改描述
@@ -456,9 +553,22 @@ def plan_ontology_changes(
     if not isinstance(schema, dict):
         schema = {}
 
+    # 后处理：校验/归一化 available_from 为 UTC ISO 8601
+    # LLM 应直接输出 ISO 8601；若输出自然语言则回退到 parse_human_time
+    # 若 LLM 未提取 available_from，尝试从描述中扫描实体名附近的时间表达
+    entity_create_list = entities.get("create", []) if isinstance(entities.get("create"), list) else []
+    for e in entity_create_list:
+        if isinstance(e, dict):
+            raw_af = e.get("available_from")
+            if raw_af:
+                e["available_from"] = _normalize_time_to_utc(raw_af)
+            else:
+                fallback_af = _scan_time_near_entity(description, e.get("name", ""))
+                e["available_from"] = _normalize_time_to_utc(fallback_af) if fallback_af else None
+
     return {
         "entities": {
-            "create": entities.get("create", []) if isinstance(entities.get("create"), list) else [],
+            "create": entity_create_list,
             "update": entities.get("update", []) if isinstance(entities.get("update"), list) else [],
             "delete": entities.get("delete", []) if isinstance(entities.get("delete"), list) else [],
         },

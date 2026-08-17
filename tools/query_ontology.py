@@ -96,7 +96,7 @@ def register(mcp):
 
         elif query:
             # 方案 C：关键词搜索
-            matches = search_entities(query, limit, db_path)
+            matches = search_entities(query, limit, db_path, include_future=include_future)
             for e in matches:
                 entity_relations = get_entity_relations(
                     e["id"], relation_types, db_path, include_future, include_expired

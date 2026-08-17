@@ -106,12 +106,16 @@ def api_stats():
 
 @app.route("/api/graph")
 def api_graph():
-    """Full graph data: all nodes and edges in one payload."""
+    """Full graph data: all nodes and edges in one payload.
+
+    返回所有实体（含未来实体）和所有关系（含虚关系），并附带时间字段，
+    供前端区分实/虚关系与当前/未来实体。
+    """
     conn = get_connection()
 
     nodes = conn.execute(
         "SELECT e.id, e.name, e.type_id, et.name AS type_name, "
-        "e.description, e.status, e.confidence "
+        "e.description, e.status, e.confidence, e.available_from "
         "FROM entities e JOIN entity_types et ON e.type_id = et.id "
         "WHERE e.status = 'active' "
         "ORDER BY e.type_id, e.name"
@@ -119,13 +123,16 @@ def api_graph():
 
     edges = conn.execute(
         "SELECT r.id, r.type_id, rt.name AS type_name, "
-        "r.source_id, r.target_id, r.confidence, r.weight, r.metadata "
+        "r.source_id, r.target_id, r.confidence, r.weight, r.metadata, "
+        "r.valid_from, r.valid_until "
         "FROM relations r JOIN relation_types rt ON r.type_id = rt.id "
         "ORDER BY r.confidence DESC"
     ).fetchall()
 
     conn.close()
+    now = _now_iso()
     return jsonify({
+        "now": now,
         "nodes": [dict(n) for n in nodes],
         "edges": [dict(e) for e in edges],
     })
@@ -146,7 +153,7 @@ def api_entities():
     else:
         rows = conn.execute(
             "SELECT e.id, e.name, e.type_id, et.name AS type_name, "
-            "e.description, e.status, e.confidence, e.source "
+            "e.description, e.status, e.confidence, e.source, e.available_from "
             "FROM entities e JOIN entity_types et ON e.type_id = et.id "
             "ORDER BY e.type_id, e.name"
         ).fetchall()
@@ -156,14 +163,17 @@ def api_entities():
 
 @app.route("/api/entity/<entity_id>")
 def api_entity_detail(entity_id):
-    """Entity detail with all relations."""
+    """Entity detail with all relations.
+
+    默认包含虚关系（include_future=true），前端按虚实区分显示。
+    """
     entity = get_entity(entity_id)
     if not entity:
         return jsonify({"error": "Entity not found"}), 404
-    include_future = request.args.get("include_future", "false").lower() == "true"
+    include_future = request.args.get("include_future", "true").lower() == "true"
     include_expired = request.args.get("include_expired", "false").lower() == "true"
     relations = get_entity_relations(entity_id, include_future=include_future, include_expired=include_expired)
-    return jsonify({"entity": entity, "relations": relations})
+    return jsonify({"entity": entity, "relations": relations, "now": _now_iso()})
 
 
 @app.route("/api/relations")

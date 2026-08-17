@@ -4,22 +4,14 @@
 
 ---
 
+
 ## ⚜️ 原初永恒统辖矩阵
 
 > *在提瓦特大陆，存在着维持世界运转的永恒规则。*
 > *天理制定法则，统辖矩阵执行法则——它检查每个实体的位置、每条关系的走向、每处矛盾的裂隙，让万千元素与因果在秩序中流转。*
 > *而派蒙，是旅行者踏遍七国、理解这个世界的向导。*
 
-**P.A.I.M.O.N** 的名字源自《原神》中"原初永恒统辖矩阵"（Algorithm of Semi-Intransient Matrix of Overseer Network）的意象——一个维护规则一致性、推理隐含依赖、监控异常冲突的智能系统。而我们项目中的推理引擎与一致性检查器，正是为 Coding Agent 构建的一座这样的"统辖矩阵"：
-
-| 原神概念 | P.A.I.M.O.N 对应 |
-|---------|----------------|
-| **天理**（世界规则制定者） | **Schema 层** — 实体类型定义、关系类型语义、类型层次继承 |
-| **原初永恒统辖矩阵**（规则执行/监控） | **推理引擎 + 一致性检查器** — 7 大规则自动推理、矛盾检测、循环依赖检测 |
-| **派蒙**（向导、接口人） | **MCP 工具 + Web 看板** — 用户/Agent 与本体知识库交互的接口 |
-| **提瓦特大陆** | **本体数据库（Ontology DB）** — 实体和关系构成的知识世界 |
-| **地脉**（连接万物的网络） | **关系图** — depends_on / causes / impacts 的关系网络 |
-| **元素反应** | **冲突检测** — 检测互斥、矛盾、循环依赖 |
+**P.A.I.M.O.N** 的名字源自《原神》中"原初永恒统辖矩阵"（Primary Algorithm of Intransient Matrix of Overseer Network）的意象——一个维护规则一致性、推理隐含依赖、监控异常冲突的智能系统。而我们项目中的推理引擎与一致性检查器，正是为 Coding Agent 构建的一座这样的"统辖矩阵"：
 
 > **P.A.I.M.O.N** — 让 Coding Agent 像旅行者借助派蒙一样，理解复杂项目的知识世界。
 
@@ -54,7 +46,7 @@ P.A.I.M.O.N：PRD → 本体抽取 → 规则推理 → 增强版 PRD（含完�
 | **类型继承** | 兄弟实体共性关系推导 | 同类型的实体共享关系 |
 | **冲突检测** | 4 种矛盾模式检测 | 依赖且冲突 / 循环包含 |
 
-**效果**：一次 PRD 解析，LLM 调用从 6 次降至 2 次，规则引擎可产出 **67 条以上**推理结果，PRD 从 276 字符增强至 5,438 字符。
+**效果**：一次 PRD 解析仅需 2 次 LLM 调用（抽取与融合），其余全部由确定性规则引擎完成，可产出 **67 条以上**推理结果，显著增强 PRD 的信息量。
 
 ### 🛡️ 一致性检查器：维护本体健康
 
@@ -66,19 +58,19 @@ P.A.I.M.O.N：PRD → 本体抽取 → 规则推理 → 增强版 PRD（含完�
 - **置信度异常检测** — 过低或反常的高置信度标记
 - **矛盾关系检测** — 同时存在 depends_on 和 conflicts_with 的关系
 
-### 🔄 自监督反馈工作流
-
-记录每次推理预测，Agent 可在实际开发后提交验证结果，形成持续改进的闭环：
-
-```
-推理引擎产生预测 → Agent 开发验证 → 提交反馈 → 统计准确率 → 校准参数
-```
-
-当前（Phase 4）支持预测记录、反馈提交、准确率统计；Phase 5+ 将实现自动参数调优。
-
 ### ⚡ 推理缓存
 
 推理结果自动缓存（内存级 LRU + TTL），实体/关系变更时自动失效。Web 看板可查看缓存命中率统计。
+
+### 🕐 时间相关关系
+
+支持"未来生效"的虚关系与未来实体（如"3 天后发布 nanomax 新模型"）：
+
+- **虚关系**：关系带 `valid_from` / `valid_until` 时间窗口，查询/推理默认只返回已生效的**实关系**，避免污染推理结果
+- **未来实体**：实体带 `available_from`，其关系自动虚化；实体转正时级联激活关系
+- **显式可控**：通过 `include_future` / `include_expired` 参数按需查看虚关系（用于规划、预览）
+- **相对时间解析**：支持"3 天后"等自然语言 → ISO 8601 时间戳
+- **集中过滤**：推理引擎 7 条规则 + 一致性检查器统一接入时间过滤，缓存按时间参数隔离
 
 ---
 
@@ -165,7 +157,7 @@ claude mcp add paimon \
 }
 ```
 
-配置后，Coding Agent 将能使用以下工具（共 8 个）：
+配置后，Coding Agent 将能使用以下工具（共 5 个，均已封装为 Trae Skill）：
 
 | 工具 | 说明 |
 |------|------|
@@ -174,15 +166,12 @@ claude mcp add paimon \
 | `ingest_document` | 从文本/Markdown 文档抽取实体和关系，写入 Ontology 数据库 |
 | `modify_ontology` | 根据自然语言描述修改已有 Ontology（增/删/改实体和关系） |
 | `delete_ontology_entity` | 根据实体 ID 或名称直接删除实体及其所有关联关系 |
-| `manage_schema` | 管理本体 Schema 层（查看/修改实体类型、关系类型语义） |
-| `reason_ontology` | **直接暴露推理引擎**，对指定实体运行 7 大规则推理，返回隐含依赖/约束/影响/冲突 |
-| `manage_feedback` | **自监督反馈工作流**，提交/查询推理结果的验证反馈，追踪自监督迭代进度 |
 
-### 8 个工具详解
+### 5 个工具详解
 
 #### ① `parse_prd` — PRD 增强解析
 
-核心入口。输入一段 PRD 文档，P.A.I.M.O.N 的 V2 流水线会：
+核心入口。输入一段 PRD 文档，P.A.I.M.O.N 的四阶段流水线会：
 
 1. **LLM 抽取** — 从 PRD 中抽取第一层实体（功能级）
 2. **本体匹配** — 在已有本体中匹配实体
@@ -214,43 +203,25 @@ claude mcp add paimon \
 
 直接根据实体 ID 或名称删除实体及其所有关联关系。操作不可逆，需谨慎使用。
 
-#### ⑥ `manage_schema` — Schema 管理
-
-管理本体的 Schema 层——定义实体类型、关系类型、类型层次、关系语义（如 `inverse_of`、`transitive`、`domain_type` / `range_type`）。
-
-#### ⑦ `reason_ontology` — 直接推理 🔥
-
-**直接暴露推理引擎**，对指定实体运行 7 大规则推理。支持：
-- 按实体 ID / 名称 / 关键词三种输入方式
-- 按规则筛选（`rules_only` 参数）
-- 按推理类型筛选（`inference_type` 参数）
-- 返回 `llm_summary` 可直接用于 Agent 上下文
-
-这是"统辖矩阵"的核心能力——像地脉网络一样，自动发现实体间隐藏的关系链。
-
-#### ⑧ `manage_feedback` — 自监督反馈
-
-提交和查询推理结果的验证反馈。每次 `parse_prd` 自动记录 `prediction_id`，Agent 可在开发完成后提交验证，系统统计准确率，为未来自监督学习积累数据。
-
 ## Trae Skills（推荐用法）
 
-项目已在 `.trae/skills/` 下封装了 5 个 Skill，Coding Agent 可直接根据意图调用对应 Skill，自动完成与 MCP 的交互。
+项目已在 `skills/` 下封装了 5 个 Skill，Coding Agent 可直接根据意图调用对应 Skill，自动完成与 MCP 的交互。
 
 | Skill | 触发场景 | 对应 MCP 工具 |
 |-------|---------|--------------|
 | `query-ontology` | 用户想查询某个实体、查看关系或搜索本体知识库 | `query_ontology` |
 | `parse-prd` | 用户输入 PRD 或需求文档，希望利用本体知识完善它 | `parse_prd` |
 | `ingest-document` | 用户输入一段文字/Markdown，要求提取实体和关系并写入本体 | `ingest_document` |
+| `modify-ontology` | 用户要求修改本体内容（更新实体描述、增删改关系） | `modify_ontology` |
 | `delete-ontology-entity` | 用户要求删除本体中的某个实体及其关系 | `delete_ontology_entity` |
-| `prd-ontology-seeder` | 用户要求从代码库、API 文档等初始化预设 Ontology | 组合使用 `ingest_document` + `manage_schema` |
 
 Skill 文件位于：
 
-- `.trae/skills/query-ontology/SKILL.md`
-- `.trae/skills/parse-prd/SKILL.md`
-- `.trae/skills/ingest-document/SKILL.md`
-- `.trae/skills/delete-ontology-entity/SKILL.md`
-- `.trae/skills/prd-ontology-seeder/SKILL.md`
+- `skills/query-ontology/SKILL.md`
+- `skills/parse-prd/SKILL.md`
+- `skills/ingest-document/SKILL.md`
+- `skills/modify-ontology/SKILL.md`
+- `skills/delete-ontology-entity/SKILL.md`
 
 每个 SKILL.md 中详细说明了参数、调用示例和返回值。Agent 识别到对应意图时，优先使用 Skill 中描述的工具和参数模板，无需手动拼装复杂 JSON。
 
@@ -272,13 +243,10 @@ Trae 会在当前工作区的 `.trae/skills/` 目录自动识别自定义 Skill�
    │       │   └── SKILL.md
    │       ├── ingest-document/
    │       │   └── SKILL.md
-   │       ├── delete-ontology-entity/
+   │       ├── modify-ontology/
    │       │   └── SKILL.md
-   │       ├── prd-ontology-seeder/
-   │       │   └── SKILL.md
-   │       └── prd-writer/
-   │           ├── SKILL.md
-   │           └── PROMPT.md
+   │       └── delete-ontology-entity/
+   │           └── SKILL.md
    │   ...
    ```
 
@@ -286,9 +254,9 @@ Trae 会在当前工作区的 `.trae/skills/` 目录自动识别自定义 Skill�
 
    ```bash
    cd /path/to/CodingOntology
-   # 如果工作区根目录就是本项目，已自带 .trae/skills，无需复制
+   # 如果工作区根目录就是本项目，可将 skills/ 软链为 .trae/skills
    # 如果是其他项目想用这些 Skill，可软链过去
-   ln -s /path/to/CodingOntology/.trae/skills /path/to/other-project/.trae/skills
+   ln -s /path/to/CodingOntology/skills /path/to/other-project/.trae/skills
    ```
 
 2. **重启或刷新 Trae**
@@ -336,12 +304,12 @@ Agent 会先调用 `ingest_document(dry_run=true)` 返回变更计划，经你�
 ### 3. 用自然语言修改已有本体
 
 ```
-请使用 modify_ontology 技能：把"用户登录"实体的描述更新为支持手机号、邮箱和微信扫码登录，并添加"用户登录"依赖"微信 OAuth 接口"的关系。
+请使用 modify-ontology 技能：把"用户登录"实体的描述更新为支持手机号、邮箱和微信扫码登录，并添加"用户登录"依赖"微信 OAuth 接口"的关系。
 
-target_entity_id 为 func:user_login，先 dry_run=true 预览，确认后再执行。
+先 dry_run=true 预览变更计划，确认后再执行。
 ```
 
-Agent 会先调用 `modify_ontology(dry_run=true)` 返回变更计划，确认后再执行。
+Agent 会先调用 `modify_ontology(dry_run=true)` 返回变更计划（含关系方向，可审核），经你确认后回传该计划调用 `modify_ontology(dry_run=false)` 执行写入。
 
 ### 4. 查询 Ontology
 
@@ -350,25 +318,6 @@ Agent 会先调用 `modify_ontology(dry_run=true)` 返回变更计划，确认�
 ```
 
 Agent 会调用 `query_ontology` 返回实体信息和关联关系。
-
-### 5. 运行推理引擎
-
-```
-使用 reason_ontology 技能，分析"用户登录"实体的所有隐含依赖、约束和影响范围
-```
-
-Agent 会调用 `reason_ontology`，返回推理引擎对"用户登录"实体运行 7 大规则后的完整推理结果，包括传递依赖链、约束传播、影响范围等。
-
-### 6. 提交反馈
-
-```
-使用 manage_feedback 技能，提交对 prediction_id: pred_abc123 的验证反馈：
-- 正确推理数：8
-- 错误推理数：1
-- 备注：依赖关系正确，冲突检测有误报
-```
-
-Agent 会调用 `manage_feedback` 记录反馈信息，用于后续准确率统计和参数校准。
 
 ## 本体数据库
 
@@ -381,56 +330,11 @@ Agent 会调用 `manage_feedback` 记录反馈信息，用于后续准确率统�
 
 ### 快速初始化自定义本体
 
-```python
-from models.schema import get_connection
-
-def seed_new_domain():
-    conn = get_connection()
-    
-    # 实体列表：[id, type_id, name, description]
-    entities = [
-        ("prefix:entity_id", "function", "实体名称", "实体描述"),
-    ]
-    for eid, etype, ename, edesc in entities:
-        conn.execute(
-            "INSERT OR IGNORE INTO entities (id, type_id, name, description, confidence, source) VALUES (?, ?, ?, ?, 0.90, 'manual')",
-            (eid, etype, ename, edesc),
-        )
-    
-    # 关系列表：[source_id, type_id, target_id, confidence, description]
-    relations = [
-        ("source_id", "depends_on", "target_id", 0.95, "关系描述"),
-    ]
-    for src, rtype, tgt, conf, desc in relations:
-        conn.execute(
-            "INSERT OR IGNORE INTO relations (id, type_id, source_id, target_id, weight, confidence, source, metadata) VALUES (?, ?, ?, ?, 1.0, ?, 'manual', ?)",
-            (f"{src}__{rtype}__{tgt}", rtype, src, tgt, conf, f'{{"description": "{desc}"}}'),
-        )
-    
-    conn.commit()
-    conn.close()
-```
+1. 删除项目根目录下的 `ontology.db` 文件；
+2. 系统在下次访问数据库时自动重建库表，并写入预置的 8 种实体类型与 10 种关系类型；
+3. 使用 `ingest-document` skill 摄入领域文档：先以 `dry_run=true` 预览变更计划，确认后以 `dry_run=false` 写入；
+4. 使用 `query-ontology` skill 查询已写入的实体与关系，确认初始化完成。
 
 ---
 
-## 技术栈
 
-| 组件 | 选型 | 理由 |
-|------|------|------|
-| 运行时 | Python + FastMCP | 轻量、成熟、MCP 标准 |
-| 存储 | SQLite | 零依赖、嵌入式、无需部署 |
-| 推理 | 确定性规则引擎 | 7 大规则，可复现，无需 LLM |
-| LLM | DeepSeek / GPT / 任意 OpenAI 兼容 | 灵活切换，支持国内/国际 |
-| 缓存 | 内存 LRU + TTL | 进程级别，实体变更自动失效 |
-| 前端 | Flask + HTML/JS | 轻量看板，可视化本体和推理结果 |
-
-## 源码统计
-
-- Python 源码：40 个文件，8,546 行
-- 测试代码：2,308 行
-- 16 个单元测试全部通过
-
----
-
-> *"派蒙是派蒙，但统辖矩阵是统辖矩阵……"*  
-> *——不，它们是同一件事的一体两面。规则创造世界，派蒙带你理解它。*

@@ -29,6 +29,21 @@ const TYPE_RADIUS = {
   actor: 5,
 };
 
+// ── 时间判定（实/虚关系、当前/未来实体）─────────────────────────
+// 虚关系：valid_from 非空且晚于 now（尚未生效）
+function isFutureRelation(edge, now) {
+  if (!edge || !edge.valid_from) return false;
+  if (!now) return false;
+  return String(edge.valid_from) > String(now);
+}
+
+// 未来实体：available_from 非空且晚于 now
+function isFutureEntity(node, now) {
+  if (!node || !node.available_from) return false;
+  if (!now) return false;
+  return String(node.available_from) > String(now);
+}
+
 class ForceGraph {
   constructor(svg, width, height) {
     this.svg = svg;
@@ -42,6 +57,8 @@ class ForceGraph {
     this.alphaDecay = 0.005;
     this.alphaMin = 0.02;
     this.velocityDecay = 0.6;
+    // 当前时间（ISO 8601 UTC），由 setData 通过 payload.now 提供
+    this.now = null;
 
     // Physics params
     this.repulsionStrength = 1200;
@@ -84,7 +101,8 @@ class ForceGraph {
     this._bindEvents();
   }
 
-  setData(nodes, edges) {
+  setData(nodes, edges, now) {
+    this.now = now || null;
     this.nodes = nodes.map((n, i) => ({
       ...n,
       x: this.width / 2 + (Math.random() - 0.5) * 300,
@@ -194,43 +212,68 @@ class ForceGraph {
 
   _renderEdges() {
     this.edgesLayer.innerHTML = '';
+    const now = this.now;
     for (const e of this.edges) {
       const a = this.nodeMap.get(e.source_id);
       const b = this.nodeMap.get(e.target_id);
       if (!a || !b) continue;
       if (a.visible === false || b.visible === false) continue;
 
+      const isVirtual = isFutureRelation(e, now);
       const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
       line.setAttribute('x1', a.x);
       line.setAttribute('y1', a.y);
       line.setAttribute('x2', b.x);
       line.setAttribute('y2', b.y);
-      line.setAttribute('stroke', getCssVar('--line'));
-      line.setAttribute('stroke-width', '1');
-      line.setAttribute('opacity', String(0.3 + e.confidence * 0.4));
+      if (isVirtual) {
+        // 虚关系：虚线 + 强调色（accent-text）
+        line.setAttribute('stroke', getCssVar('--accent-text') || '#FF4438');
+        line.setAttribute('stroke-width', '1.2');
+        line.setAttribute('stroke-dasharray', '4 3');
+        line.setAttribute('opacity', '0.6');
+      } else {
+        line.setAttribute('stroke', getCssVar('--line'));
+        line.setAttribute('stroke-width', '1');
+        line.setAttribute('opacity', String(0.3 + e.confidence * 0.4));
+      }
       line.dataset.edgeId = e.id;
+      line.dataset.virtual = isVirtual ? '1' : '0';
       this.edgesLayer.appendChild(line);
     }
   }
 
   _renderNodes() {
     this.nodesLayer.innerHTML = '';
+    const now = this.now;
     for (const node of this.nodes) {
       if (node.visible === false) continue;
       const r = TYPE_RADIUS[node.type_id] || 5;
       const color = TYPE_COLORS[node.type_id] || '#8C8C8C';
+      const isFuture = isFutureEntity(node, now);
 
       const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
       g.classList.add('node-group');
+      if (isFuture) g.classList.add('future-entity');
       g.dataset.nodeId = node.id;
       g.setAttribute('transform', `translate(${node.x},${node.y})`);
       g.style.cursor = 'pointer';
+      if (isFuture) g.style.opacity = '0.55';
 
       const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
       circle.setAttribute('r', r);
       circle.setAttribute('fill', color);
-      circle.setAttribute('stroke', node === this.selectedNode ? getCssVar('--display') : getCssVar('--bg'));
-      circle.setAttribute('stroke-width', node === this.selectedNode ? '2' : '0');
+      if (isFuture) {
+        // 未来实体：虚线边框（accent 色）
+        circle.setAttribute('stroke', getCssVar('--accent-text') || '#FF4438');
+        circle.setAttribute('stroke-width', '1.2');
+        circle.setAttribute('stroke-dasharray', '2 2');
+      } else if (node === this.selectedNode) {
+        circle.setAttribute('stroke', getCssVar('--display'));
+        circle.setAttribute('stroke-width', '2');
+      } else {
+        circle.setAttribute('stroke', getCssVar('--bg'));
+        circle.setAttribute('stroke-width', '0');
+      }
       g.appendChild(circle);
 
       g.addEventListener('mousedown', (ev) => this._onNodeMouseDown(ev, node));
@@ -420,6 +463,8 @@ class ForceGraph {
 // Export for use in index.html
 window.ForceGraph = ForceGraph;
 window.TYPE_COLORS = TYPE_COLORS;
+window.isFutureRelation = isFutureRelation;
+window.isFutureEntity = isFutureEntity;
 
 // Re-render on theme change so edges/strokes pick up the new tokens
 window.addEventListener('themechange', () => {

@@ -598,7 +598,7 @@
 
       graph = new ForceGraph(svg, rect.width, rect.height);
       window.__graphInstance = graph;
-      graph.setData(data.nodes, data.edges);
+      graph.setData(data.nodes, data.edges, data.now);
       graph.onSelect(node => {
         if (node) showNodeDetail(node);
         else hideNodeDetail();
@@ -639,6 +639,30 @@
         });
         legend.appendChild(item);
       });
+
+      // 虚实关系/实体说明（固定项，不可点击）
+      const sep = document.createElement('div');
+      sep.style.cssText = 'width:1px;height:14px;background:var(--line-2);margin:0 4px';
+      legend.appendChild(sep);
+
+      const relLegend = document.createElement('div');
+      relLegend.className = 'item';
+      relLegend.style.cursor = 'default';
+      relLegend.innerHTML = `<span style="display:inline-block;width:18px;height:0;border-top:1px solid var(--line)"></span>Active relation`;
+      legend.appendChild(relLegend);
+
+      const virtLegend = document.createElement('div');
+      virtLegend.className = 'item';
+      virtLegend.style.cursor = 'default';
+      const accentColor = getCssVar ? getCssVar('--accent-text') : '#FF4438';
+      virtLegend.innerHTML = `<span style="display:inline-block;width:18px;height:0;border-top:1.2px dashed ${accentColor || '#FF4438'}"></span>Virtual relation (future)`;
+      legend.appendChild(virtLegend);
+
+      const futureEnt = document.createElement('div');
+      futureEnt.className = 'item';
+      futureEnt.style.cursor = 'default';
+      futureEnt.innerHTML = `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;border:1.2px dashed ${accentColor || '#FF4438'};opacity:.55"></span>Future entity`;
+      legend.appendChild(futureEnt);
     }
 
     function showNodeDetail(node) {
@@ -649,32 +673,71 @@
       document.getElementById('dp-type').textContent = node.type_name;
       document.getElementById('dp-desc').textContent = node.description || '—';
 
-      // Load relations
+      // 未来实体标记
+      const isFutureEnt = window.isFutureEntity && window.isFutureEntity(node, graphData && graphData.now);
+      let entBadge = document.getElementById('dp-future-badge');
+      if (!entBadge) {
+        // 动态插入未来实体徽标（位于 type 旁）
+        const typeEl = document.getElementById('dp-type');
+        entBadge = document.createElement('span');
+        entBadge.id = 'dp-future-badge';
+        entBadge.style.cssText = 'display:inline-block;margin-left:8px;font-family:var(--f-mono);font-size:8px;padding:2px 6px;border-radius:var(--r-pill);border:1px dashed var(--accent-text);color:var(--accent-text);letter-spacing:.08em;text-transform:uppercase';
+        typeEl.parentNode.insertBefore(entBadge, typeEl.nextSibling);
+      }
+      if (isFutureEnt) {
+        entBadge.style.display = 'inline-block';
+        entBadge.textContent = 'FUTURE';
+        entBadge.title = 'available_from: ' + (node.available_from || '');
+      } else {
+        entBadge.style.display = 'none';
+      }
+
+      // Load relations（默认接口已返回含虚关系的全部关系）
       api('/api/entity/' + encodeURIComponent(node.id)).then(data => {
         const relContainer = document.getElementById('dp-relations');
         relContainer.innerHTML = '';
-        if (data.relations.length === 0) {
+        const now = (data && data.now) || (graphData && graphData.now) || null;
+        const rels = data.relations || [];
+        if (rels.length === 0) {
           relContainer.innerHTML = '<div style="color:var(--muted);font-size:10px">No relations found.</div>';
           return;
         }
-        data.relations.slice(0, 15).forEach(r => {
+        // 统计虚实关系数量
+        const virtualCount = rels.filter(r => window.isFutureRelation(r, now)).length;
+        if (virtualCount > 0) {
+          const summary = document.createElement('div');
+          summary.style.cssText = 'font-family:var(--f-mono);font-size:8px;letter-spacing:.1em;text-transform:uppercase;color:var(--accent-text);margin-bottom:6px';
+          summary.textContent = `${virtualCount} virtual / ${rels.length - virtualCount} active`;
+          relContainer.appendChild(summary);
+        }
+        rels.slice(0, 15).forEach(r => {
           const div = document.createElement('div');
           div.className = 'dp-rel';
           const isOutgoing = r.direction === 'outgoing';
-          const targetName = isOutgoing ? r.related_entity_name : r.related_entity_name;
+          const isVirtual = window.isFutureRelation(r, now);
           const arrow = isOutgoing ? '→' : '←';
+          const relColor = isVirtual ? 'var(--accent-text)' : 'var(--muted)';
+          const relStyle = isVirtual ? 'border-bottom-style:dashed;' : '';
+          div.style.cssText = relStyle;
+          const badge = isVirtual
+            ? `<span style="margin-left:6px;font-family:var(--f-mono);font-size:7px;padding:1px 4px;border-radius:var(--r-pill);border:1px dashed var(--accent-text);color:var(--accent-text);letter-spacing:.06em">VIRTUAL</span>`
+            : '';
+          const timeInfo = (isVirtual && r.valid_from)
+            ? `<span style="color:var(--muted);font-size:8px;margin-left:4px">↳ ${r.valid_from.slice(0,10)}</span>`
+            : '';
           div.innerHTML = `
-            <span style="color:var(--muted)">${r.relation_type}</span>
+            <span style="color:${relColor}">${r.relation_type}${badge}</span>
             <span class="arrow">${arrow}</span>
             <span class="tgt">${r.related_entity_name}</span>
+            ${timeInfo}
             <span style="margin-left:auto;color:var(--muted)">${(r.confidence * 100).toFixed(0)}%</span>
           `;
           relContainer.appendChild(div);
         });
-        if (data.relations.length > 15) {
+        if (rels.length > 15) {
           const more = document.createElement('div');
           more.style.cssText = 'color:var(--muted);font-size:9px;padding:6px 0';
-          more.textContent = `+ ${data.relations.length - 15} more…`;
+          more.textContent = `+ ${rels.length - 15} more…`;
           relContainer.appendChild(more);
         }
       });
@@ -727,12 +790,18 @@
         tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted)">No entities found.</td></tr>';
         return;
       }
+      const now = (graphData && graphData.now) || null;
       tbody.innerHTML = '';
       entities.forEach(e => {
+        const isFuture = now && e.available_from && String(e.available_from) > String(now);
+        const futureBadge = isFuture
+          ? `<span title="available_from: ${e.available_from}" style="margin-left:6px;font-family:var(--f-mono);font-size:7px;padding:1px 5px;border-radius:var(--r-pill);border:1px dashed var(--accent-text);color:var(--accent-text);letter-spacing:.06em">FUTURE</span>`
+          : '';
         const tr = document.createElement('tr');
+        if (isFuture) tr.style.opacity = '0.7';
         tr.innerHTML = `
           <td style="color:var(--muted);font-size:10px">${e.id}</td>
-          <td>${e.name}</td>
+          <td>${e.name}${futureBadge}</td>
           <td><span class="type-pill">${e.type_name}</span></td>
           <td><span class="pill ${e.status === 'active' ? 'a' : 'i'}">${e.status}</span></td>
           <td style="color:var(--display)">${(e.confidence * 100).toFixed(0)}%</td>

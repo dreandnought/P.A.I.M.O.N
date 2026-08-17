@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS entities (
     source_ref      TEXT,
     properties      TEXT DEFAULT '{}',
     tags            TEXT DEFAULT '[]',
+    available_from  TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -53,6 +54,7 @@ CREATE TABLE IF NOT EXISTS entities (
 CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(type_id);
 CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name);
 CREATE INDEX IF NOT EXISTS idx_entities_status ON entities(status);
+CREATE INDEX IF NOT EXISTS idx_entities_available_from ON entities(available_from);
 
 -- 关系实例表（核心）
 CREATE TABLE IF NOT EXISTS relations (
@@ -164,6 +166,10 @@ def get_connection(db_path=None):
     conn.execute("PRAGMA foreign_keys = ON")
     # 自动迁移：确保 relations 表包含时间字段（幂等）
     _migrate_relation_time_fields(conn)
+    # 自动迁移：确保 entities 表包含 available_from 字段（幂等）
+    _migrate_entity_time_fields(conn)
+    # 自动迁移：确保 relation_types 表包含 inverse_of/domain_type/range_type 字段（幂等）
+    _migrate_relation_type_fields(conn)
     return conn
 
 
@@ -184,4 +190,36 @@ def _migrate_relation_time_fields(conn):
             conn.commit()
     except Exception:
         # 迁移失败不应阻塞连接（例如表结构异常时静默降级）
+        pass
+
+
+def _migrate_entity_time_fields(conn):
+    """自动迁移 entities 表，补充 available_from 字段（幂等）。"""
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(entities)").fetchall()}
+        if "available_from" not in cols:
+            conn.execute("ALTER TABLE entities ADD COLUMN available_from TEXT")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_entities_available_from ON entities(available_from)")
+            conn.commit()
+    except Exception:
+        pass
+
+
+def _migrate_relation_type_fields(conn):
+    """自动迁移 relation_types 表，补充 inverse_of/domain_type/range_type 字段（幂等）。"""
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(relation_types)").fetchall()}
+        changed = False
+        if "inverse_of" not in cols:
+            conn.execute("ALTER TABLE relation_types ADD COLUMN inverse_of TEXT REFERENCES relation_types(id)")
+            changed = True
+        if "domain_type" not in cols:
+            conn.execute("ALTER TABLE relation_types ADD COLUMN domain_type TEXT")
+            changed = True
+        if "range_type" not in cols:
+            conn.execute("ALTER TABLE relation_types ADD COLUMN range_type TEXT")
+            changed = True
+        if changed:
+            conn.commit()
+    except Exception:
         pass

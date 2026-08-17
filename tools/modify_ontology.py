@@ -15,6 +15,7 @@ from models.entity import (
     find_or_create_entity,
     get_entity,
     update_entity,
+    compute_relation_time_from_endpoints,
 )
 from models.relation import (
     create_relation,
@@ -102,6 +103,7 @@ def _execute_modify_plan(plan, db_path):
                 suggested_id=e.get("suggested_id") or e.get("entity_id"),
                 confidence=e.get("confidence", 0.8),
                 source="nlp_modify",
+                available_from=e.get("available_from"),
                 db_path=db_path,
             )
             if created:
@@ -149,16 +151,29 @@ def _execute_modify_plan(plan, db_path):
             failed_items.append({"type": "relation.create", "data": r, "error": "源或目标实体不存在"})
             continue
         try:
+            # 根据端点实体的 available_from 计算虚关系化
+            valid_from = r.get("valid_from")
+            valid_until = r.get("valid_until")
+            metadata = {"description": r.get("description", "")}
+
+            if not valid_from:
+                computed_from, caused_by = compute_relation_time_from_endpoints(
+                    source_id, target_id, db_path
+                )
+                if computed_from:
+                    valid_from = computed_from
+                    metadata["time_caused_by_entities"] = caused_by
+
             relation = create_relation(
                 type_id=type_id,
                 source_id=source_id,
                 target_id=target_id,
                 confidence=r.get("confidence", 0.8),
                 source="nlp_modify",
-                metadata={"description": r.get("description", "")},
+                metadata=metadata,
                 db_path=db_path,
-                valid_from=r.get("valid_from"),
-                valid_until=r.get("valid_until"),
+                valid_from=valid_from,
+                valid_until=valid_until,
             )
             created_relations.append(relation)
         except Exception as ex:
@@ -182,6 +197,25 @@ def _execute_modify_plan(plan, db_path):
             continue
         try:
             updates = {k: v for k, v in r.items() if k != "relation_id" and v is not None}
+            # description 不是独立列，合并进 metadata（与 create 分支行为一致）
+            if "description" in updates:
+                import json as _json
+
+                desc = updates.pop("description")
+                existing = relation.get("metadata")
+                if isinstance(existing, str) and existing:
+                    try:
+                        meta = _json.loads(existing)
+                    except ValueError:
+                        meta = {}
+                elif isinstance(existing, dict):
+                    meta = dict(existing)
+                else:
+                    meta = {}
+                if not isinstance(meta, dict):
+                    meta = {}
+                meta["description"] = desc
+                updates["metadata"] = _json.dumps(meta, ensure_ascii=False)
             if updates:
                 update_relation(relation["id"], updates, db_path=db_path)
             updated_relations.append(get_relation_by_entities(source_id, target_id, type_id, db_path))
