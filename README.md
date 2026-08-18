@@ -4,6 +4,7 @@
 
 ---
 
+本项目为一个构建于本体论之上的PRD增幅器，用来应对大型项目的复杂知识网络。
 
 ## ⚜️ 原初永恒统辖矩阵
 
@@ -84,14 +85,14 @@ P.A.I.M.O.N：PRD → 本体抽取 → 规则推理 → 增强版 PRD（含完�
 ### 1. 安装依赖
 
 ```bash
-cd CodingOntology
+cd P.A.I.M.O.N
 pip install -r requirements.txt
 ```
 
 ### 2. 启动前端看板
 
 ```bash
-cd CodingOntology/web
+cd P.A.I.M.O.N/web
 python3 app.py
 ```
 
@@ -139,7 +140,7 @@ python3 server.py
 ```bash
 # 添加 MCP Server（从项目目录执行）
 claude mcp add paimon \
-  -- python /absolute/path/to/CodingOntology/server.py
+  -- python /absolute/path/to/P.A.I.M.O.N/server.py
 ```
 
 ### 接入 Cline / Cursor / Trae
@@ -151,7 +152,7 @@ claude mcp add paimon \
   "mcpServers": {
     "paimon": {
       "command": "python3",
-      "args": ["/absolute/path/to/CodingOntology/server.py"]
+      "args": ["/absolute/path/to/P.A.I.M.O.N/server.py"]
     }
   }
 }
@@ -234,7 +235,7 @@ Trae 会在当前工作区的 `.trae/skills/` 目录自动识别自定义 Skill�
    将本项目的 Skill 复制或软链接到工作区根目录的 `.trae/skills/` 下，确保每个 Skill 都有独立的子目录和 `SKILL.md`：
 
    ```
-   CodingOntology/
+   P.A.I.M.O.N/
    ├── .trae/
    │   └── skills/
    │       ├── query-ontology/
@@ -253,10 +254,10 @@ Trae 会在当前工作区的 `.trae/skills/` 目录自动识别自定义 Skill�
    快捷方式（Linux/macOS）：
 
    ```bash
-   cd /path/to/CodingOntology
+   cd /path/to/P.A.I.M.O.N
    # 如果工作区根目录就是本项目，可将 skills/ 软链为 .trae/skills
    # 如果是其他项目想用这些 Skill，可软链过去
-   ln -s /path/to/CodingOntology/skills /path/to/other-project/.trae/skills
+   ln -s /path/to/P.A.I.M.O.N/skills /path/to/other-project/.trae/skills
    ```
 
 2. **重启或刷新 Trae**

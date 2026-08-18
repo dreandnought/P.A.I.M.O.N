@@ -7,7 +7,7 @@
 from engine.core import Rule
 from engine.result import InferenceResult
 from models.schema import get_connection
-from datetime import datetime, timezone
+from models.Istaroth import cte_time_predicates, cte_time_params_list, time_filter_sql
 
 
 class ConstraintPropagationRule(Rule):
@@ -32,19 +32,11 @@ class ConstraintPropagationRule(Rule):
     def apply(self, entity_ids, db_path=None, include_future=False, include_expired=False):
         conn = get_connection(db_path)
         results = []
-        now = datetime.now(timezone.utc).isoformat()
 
         for eid in entity_ids:
-            # 1. 找到直接约束当前实体的约束（加时间过滤）
-            conditions = []
-            cparams = [eid]
-            if not include_future:
-                conditions.append("(r.valid_from IS NULL OR r.valid_from <= ?)")
-                cparams.append(now)
-            if not include_expired:
-                conditions.append("(r.valid_until IS NULL OR r.valid_until > ?)")
-                cparams.append(now)
-            time_sql = (" AND " + " AND ".join(conditions)) if conditions else ""
+            # 1. 找到直接约束当前实体的约束（时间过滤由 Istaroth 生成）
+            time_sql, cparams_extra = time_filter_sql("r", include_future, include_expired)
+            cparams = [eid] + cparams_extra
 
             constraints = conn.execute(
                 f"""SELECT r.source_id AS constraint_source, r.confidence,
@@ -60,14 +52,11 @@ class ConstraintPropagationRule(Rule):
             if not constraints:
                 continue
 
-            # 2. 找到当前实体包含的所有子实体（递归，加时间过滤）
-            future_cond = "" if include_future else " AND (r.valid_from IS NULL OR r.valid_from <= ?) "
-            expired_cond = "" if include_expired else " AND (r.valid_until IS NULL OR r.valid_until > ?) "
-            cparams2 = [eid]
-            if not include_future:
-                cparams2.append(now)
-            if not include_expired:
-                cparams2.append(now)
+            # 2. 找到当前实体包含的所有子实体（递归 CTE，时间过滤由 Istaroth 生成）
+            future_cond, expired_cond = cte_time_predicates(
+                "r", include_future, include_expired
+            )
+            cparams2 = [eid] + cte_time_params_list(include_future, include_expired) * 2
             children = conn.execute(
                 f"""WITH RECURSIVE containment AS (
                     SELECT r.target_id FROM relations r

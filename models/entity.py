@@ -1,11 +1,38 @@
 """
 Entity CRUD 操作。
+
+所有时序相关的辅助函数（_now_iso、activate_entity、get_future_entities、
+compute_relation_time_from_endpoints）均委托给 models.Istaroth，本文件保留
+向后兼容的别名。
 """
 
 import json
 
 from .schema import get_connection
-from .relation import _now_iso, activate_relation
+from .Istaroth import (
+    _now_iso,
+    activate_entity,
+    activate_relation,
+    compute_relation_time_from_endpoints,
+    get_future_entities,
+)
+
+__all__ = [
+    "get_entity",
+    "get_entity_by_name",
+    "search_entities",
+    "list_all_entities",
+    "get_entities_by_ids",
+    "entity_exists",
+    "create_entity",
+    "update_entity",
+    "delete_entity",
+    "resolve_entity_by_name_or_id",
+    "find_or_create_entity",
+    "get_future_entities",
+    "compute_relation_time_from_endpoints",
+    "activate_entity",
+]
 
 
 def get_entity(entity_id, db_path=None):
@@ -240,21 +267,8 @@ def find_or_create_entity(
 
 def get_future_entities(db_path=None, limit=100):
     """查询所有未来生效的实体（供规划/预览）。"""
-    conn = get_connection(db_path)
-    now = _now_iso()
-    rows = conn.execute(
-        """
-        SELECT e.id, e.name, et.name AS type_name, e.description, e.available_from
-        FROM entities e
-        JOIN entity_types et ON e.type_id = et.id
-        WHERE e.available_from IS NOT NULL AND e.available_from > ?
-        ORDER BY e.available_from ASC
-        LIMIT ?
-        """,
-        (now, limit),
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    from .Istaroth import get_future_entities as _get_future_entities
+    return _get_future_entities(db_path=db_path, limit=limit)
 
 
 def compute_relation_time_from_endpoints(source_id, target_id, db_path=None):
@@ -265,23 +279,8 @@ def compute_relation_time_from_endpoints(source_id, target_id, db_path=None):
     - caused_by_entity_ids 为这些未来端点 id 列表（供 metadata 标记级联激活）
     - 全部端点已生效则返回 (None, [])
     """
-    now = _now_iso()
-    future_times = []
-    caused_by = []
-
-    for eid in (source_id, target_id):
-        conn = get_connection(db_path)
-        row = conn.execute(
-            "SELECT available_from FROM entities WHERE id = ?", (eid,)
-        ).fetchone()
-        conn.close()
-        if row and row["available_from"] and row["available_from"] > now:
-            future_times.append(row["available_from"])
-            caused_by.append(eid)
-
-    if not future_times:
-        return None, []
-    return max(future_times), caused_by
+    from .Istaroth import compute_relation_time_from_endpoints as _compute
+    return _compute(source_id, target_id, db_path)
 
 
 def activate_entity(entity_id, db_path=None):
@@ -289,59 +288,5 @@ def activate_entity(entity_id, db_path=None):
 
     返回更新后的实体 dict，若不存在返回 None。
     """
-    from engine.cache import invalidate_on_entity_change, invalidate_on_relation_change
-
-    entity = get_entity(entity_id, db_path)
-    if not entity:
-        return None
-
-    # 1. 置 available_from = now（转正）
-    update_entity(entity_id, {"available_from": _now_iso()}, db_path=db_path)
-    invalidate_on_entity_change(entity_id)
-
-    # 2. 扫描 metadata 中标记了该实体的虚关系
-    conn = get_connection(db_path)
-    now = _now_iso()
-    # LIKE 粗筛 + JSON 精确校验
-    candidate_rows = conn.execute(
-        "SELECT id, metadata, valid_from FROM relations "
-        "WHERE metadata LIKE ?",
-        (f'%time_caused_by_entities%',),
-    ).fetchall()
-    conn.close()
-
-    for row in candidate_rows:
-        try:
-            meta = json.loads(row["metadata"]) if row["metadata"] else {}
-        except (json.JSONDecodeError, TypeError):
-            continue
-        caused_ids = meta.get("time_caused_by_entities", [])
-        if entity_id not in caused_ids:
-            continue
-
-        # 检查所有标记的未来端点是否均已转正
-        all_active = True
-        for cid in caused_ids:
-            conn2 = get_connection(db_path)
-            ent_row = conn2.execute(
-                "SELECT available_from FROM entities WHERE id = ?", (cid,)
-            ).fetchone()
-            conn2.close()
-            if ent_row and ent_row["available_from"] and ent_row["available_from"] > now:
-                all_active = False
-                break
-
-        if all_active and row["valid_from"] and row["valid_from"] > now:
-            activated = activate_relation(row["id"], db_path=db_path)
-            if activated:
-                # 获取关系的两端实体用于缓存失效
-                conn3 = get_connection(db_path)
-                rel_row = conn3.execute(
-                    "SELECT source_id, target_id FROM relations WHERE id = ?",
-                    (row["id"],),
-                ).fetchone()
-                conn3.close()
-                if rel_row:
-                    invalidate_on_relation_change(rel_row["source_id"], rel_row["target_id"])
-
-    return get_entity(entity_id, db_path)
+    from .Istaroth import activate_entity as _activate_entity
+    return _activate_entity(entity_id, db_path=db_path)

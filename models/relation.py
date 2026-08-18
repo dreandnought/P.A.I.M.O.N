@@ -4,44 +4,28 @@ Relation CRUD 操作。
 支持时间有效关系（虚关系）：每条关系可带 valid_from / valid_until 时间窗口。
 - 默认查询只返回当前已生效的实关系（old 数据 = 永久有效）
 - 通过 include_future / include_expired 可显式包含未来/过期关系
+
+所有时序相关的辅助函数（_now_iso、_time_filter_sql、activate_relation、
+get_future_relations）均委托给 models.Istaroth，本文件保留向后兼容的别名。
 """
 
-from datetime import datetime, timezone
-
+from .Istaroth import _now_iso, _time_filter_sql, activate_relation, get_future_relations
 from .schema import get_connection
 
-
-def _now_iso():
-    """当前 UTC ISO 8601 时间字符串。"""
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _time_filter_sql(alias, include_future=False, include_expired=False, now=None):
-    """生成关系时间过滤的 SQL 片段。
-
-    Args:
-        alias: relations 表的别名（如 'r'）
-        include_future: 是否包含未来生效的虚关系
-        include_expired: 是否包含已过期关系
-        now: 当前时间（ISO 8601），默认用当前 UTC 时间
-
-    Returns:
-        (sql_fragment, params)：sql_fragment 以 ' AND ' 开头；若都不需要过滤则返回 ('', [])。
-    """
-    now = now or _now_iso()
-    if include_future and include_expired:
-        return "", []
-    conditions = []
-    params = []
-    if not include_future:
-        # 排除未来关系：valid_from IS NULL 或 valid_from <= now
-        conditions.append(f"({alias}.valid_from IS NULL OR {alias}.valid_from <= ?)")
-        params.append(now)
-    if not include_expired:
-        # 排除已过期：valid_until IS NULL 或 valid_until > now
-        conditions.append(f"({alias}.valid_until IS NULL OR {alias}.valid_until > ?)")
-        params.append(now)
-    return " AND " + " AND ".join(conditions), params
+# 向后兼容：旧代码可能以"models.relation._time_filter_sql / _now_iso"形式导入。
+__all__ = [
+    "get_entity_relations",
+    "get_outgoing_relations",
+    "get_incoming_relations",
+    "get_transitive_relations",
+    "relation_exists",
+    "get_relation_by_entities",
+    "create_relation",
+    "update_relation",
+    "delete_relation",
+    "activate_relation",
+    "get_future_relations",
+]
 
 
 def get_entity_relations(entity_id, relation_types=None, db_path=None,
@@ -335,37 +319,5 @@ def delete_relation(relation_id, db_path=None):
     return cur.rowcount > 0
 
 
-def activate_relation(relation_id, db_path=None):
-    """将虚关系转正为实关系（valid_from = now, valid_until = NULL）。
-
-    返回更新后的关系 dict，若不存在返回 None。
-    """
-    return update_relation(
-        relation_id,
-        {"valid_from": _now_iso(), "valid_until": None},
-        db_path,
-    )
-
-
-def get_future_relations(db_path=None, limit=100):
-    """查询所有未来生效的虚关系（供规划/预览）。"""
-    conn = get_connection(db_path)
-    now = _now_iso()
-    rows = conn.execute(
-        """
-        SELECT r.id, rt.name AS relation_type,
-               e1.id AS source_id, e1.name AS source_name,
-               e2.id AS target_id, e2.name AS target_name,
-               r.valid_from, r.valid_until, r.confidence, r.metadata
-        FROM relations r
-        JOIN relation_types rt ON r.type_id = rt.id
-        JOIN entities e1 ON r.source_id = e1.id
-        JOIN entities e2 ON r.target_id = e2.id
-        WHERE r.valid_from IS NOT NULL AND r.valid_from > ?
-        ORDER BY r.valid_from ASC
-        LIMIT ?
-        """,
-        (now, limit),
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+# activate_relation 与 get_future_relations 已在文件顶部从 models.Istaroth 导入，
+# 保留其定义在 Istaroth 是为了集中管理所有"时序"相关操作。

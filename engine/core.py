@@ -3,14 +3,8 @@
 
 from abc import ABC, abstractmethod
 from typing import Optional
-from datetime import datetime, timezone
 from .result import InferenceResult, ReasoningOutput
 from .cache import get_cache
-
-
-def _now_iso():
-    """当前 UTC ISO 8601 时间字符串。"""
-    return datetime.now(timezone.utc).isoformat()
 
 
 class Rule(ABC):
@@ -214,7 +208,7 @@ class ReasoningEngine:
         Returns:
             dict: {"entities": [...], "relations": [...]}
         """
-        from models.relation import _time_filter_sql
+        from models.Istaroth import time_filter_sql, cte_time_predicates, cte_time_params_list
         from models.schema import get_connection
 
         if not entity_ids:
@@ -226,7 +220,7 @@ class ReasoningEngine:
         transitive_types = ["depends_on", "contains", "derived_from"]
 
         # 时间过滤条件（用于直接关系查询）
-        time_filter, time_params = _time_filter_sql(
+        time_filter, time_params = time_filter_sql(
             "r", self.include_future, self.include_expired
         )
 
@@ -282,18 +276,14 @@ class ReasoningEngine:
             # 1.2 多跳 BFS（仅可传递关系类型）
             for rtype in transitive_types:
                 try:
-                    future_cond = "" if self.include_future else " AND (r.valid_from IS NULL OR r.valid_from <= ?) "
-                    expired_cond = "" if self.include_expired else " AND (r.valid_until IS NULL OR r.valid_until > ?) "
-                    bfs_params = [eid, rtype]
-                    if not self.include_future:
-                        bfs_params.append(_now_iso())
-                    if not self.include_expired:
-                        bfs_params.append(_now_iso())
-                    bfs_params += [rtype, max_depth]
-                    if not self.include_future:
-                        bfs_params.append(_now_iso())
-                    if not self.include_expired:
-                        bfs_params.append(_now_iso())
+                    future_cond, expired_cond = cte_time_predicates(
+                        "r", self.include_future, self.include_expired
+                    )
+                    base_params = cte_time_params_list(
+                        self.include_future, self.include_expired
+                    )
+                    # 参数顺序：初始 CTE[source_id, rtype, base_params] + 递归 CTE[rtype, max_depth, base_params] + eid
+                    bfs_params = [eid, rtype] + base_params + [rtype, max_depth] + base_params + [eid]
 
                     rows = conn.execute(
                         f"""WITH RECURSIVE transitive_bfs AS (
@@ -319,7 +309,7 @@ class ReasoningEngine:
                         WHERE tb.target_id != ?
                           AND e.status = 'active'
                         ORDER BY tb.depth""",
-                        bfs_params + [eid]
+                        bfs_params
                     ).fetchall()
 
                     for row in rows:

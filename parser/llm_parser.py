@@ -218,7 +218,7 @@ def _normalize_time_to_utc(text):
         pass
 
     # 2. 回退：自然语言解析（parse_human_time 支持中文数字）
-    from models.time_parse import parse_human_time
+    from models.Istaroth import parse_human_time
     dt_str = parse_human_time(raw)
     if not dt_str:
         return None
@@ -245,7 +245,7 @@ def _scan_time_near_entity(content, entity_name, window=40):
     start = max(0, idx - window)
     end = min(len(content), idx + len(entity_name) + window)
     snippet = content[start:end]
-    from models.time_parse import extract_time_info
+    from models.Istaroth import extract_time_info
     _, _, matched = extract_time_info(snippet)
     return matched
 

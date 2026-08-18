@@ -11,7 +11,7 @@
 from engine.core import Rule
 from engine.result import InferenceResult
 from models.schema import get_connection
-from datetime import datetime, timezone
+from models.Istaroth import cte_time_predicates, cte_time_params_list, time_filter_sql
 
 
 class ConflictDetectionRule(Rule):
@@ -34,17 +34,9 @@ class ConflictDetectionRule(Rule):
     def apply(self, entity_ids, db_path=None, include_future=False, include_expired=False):
         conn = get_connection(db_path)
         results = []
-        now = datetime.now(timezone.utc).isoformat()
 
-        # 时间过滤条件
-        time_sql = ""
-        time_params = []
-        if not include_future:
-            time_sql += " AND (r.valid_from IS NULL OR r.valid_from <= ?) "
-            time_params.append(now)
-        if not include_expired:
-            time_sql += " AND (r.valid_until IS NULL OR r.valid_until > ?) "
-            time_params.append(now)
+        # 时间过滤条件（由 Istaroth 统一生成）
+        time_sql, time_params = time_filter_sql("r", include_future, include_expired)
 
         for eid in entity_ids:
             entity_row = conn.execute(
@@ -87,18 +79,12 @@ class ConflictDetectionRule(Rule):
                     ))
 
             # 模式2: 循环包含检测（A contains B, B contains ... A）
-            future_cond = "" if include_future else " AND (r.valid_from IS NULL OR r.valid_from <= ?) "
-            expired_cond = "" if include_expired else " AND (r.valid_until IS NULL OR r.valid_until > ?) "
-            cycle_params = [eid]
-            if not include_future:
-                cycle_params.append(now)
-            if not include_expired:
-                cycle_params.append(now)
-            if not include_future:
-                cycle_params.append(now)
-            if not include_expired:
-                cycle_params.append(now)
-            cycle_params.append(eid)
+            future_cond, expired_cond = cte_time_predicates(
+                "r", include_future, include_expired
+            )
+            base_params = cte_time_params_list(include_future, include_expired)
+            # 参数顺序：初始 CTE[source_id, base_params...] + 递归 CTE[base_params...] + eid
+            cycle_params = [eid] + base_params + base_params + [eid]
 
             cycle = conn.execute(
                 f"""WITH RECURSIVE chain AS (

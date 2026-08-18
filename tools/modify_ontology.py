@@ -8,6 +8,7 @@ MCP Tool: modify_ontology
 from typing import Optional
 
 from parser.llm_parser import plan_ontology_changes
+from models.schema import WHITELIST_RELATION_TYPES
 from models.entity import (
     create_entity,
     delete_entity,
@@ -49,6 +50,22 @@ def _build_target_context(target_entity_id, db_path):
 def _validate_plan(plan, db_path):
     """校验变更计划中的实体/关系 ID 是否有效，返回校验结果和错误列表。"""
     errors = []
+    # 关系类型白名单校验：禁止使用预设 10 种之外的关系类型
+    for r in plan["relations"]["create"]:
+        rt = r.get("relation_type")
+        if rt and rt not in WHITELIST_RELATION_TYPES:
+            errors.append(
+                f"create 关系类型非白名单: {rt}（仅允许 {sorted(WHITELIST_RELATION_TYPES)}）"
+            )
+    for r in plan["relations"]["update"]:
+        rid = r.get("relation_id")
+        if rid:
+            parts = rid.split(":", 1)
+            if len(parts) == 2 and parts[0] not in WHITELIST_RELATION_TYPES:
+                errors.append(
+                    f"update 关系类型非白名单: {parts[0]}（仅允许 {sorted(WHITELIST_RELATION_TYPES)}）"
+                )
+
     for e in plan["entities"]["update"]:
         eid = e.get("entity_id")
         if eid and not entity_exists(eid, db_path):
@@ -146,6 +163,9 @@ def _execute_modify_plan(plan, db_path):
         type_id = r.get("relation_type")
         if not all([source_id, target_id, type_id]):
             failed_items.append({"type": "relation.create", "data": r, "error": "缺少 source_id/target_id/relation_type"})
+            continue
+        if type_id not in WHITELIST_RELATION_TYPES:
+            failed_items.append({"type": "relation.create", "data": r, "error": f"关系类型非白名单: {type_id}（仅允许 {sorted(WHITELIST_RELATION_TYPES)}）"})
             continue
         if not (entity_exists(source_id, db_path) and entity_exists(target_id, db_path)):
             failed_items.append({"type": "relation.create", "data": r, "error": "源或目标实体不存在"})

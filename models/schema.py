@@ -124,6 +124,12 @@ DEFAULT_RELATION_TYPES = [
     ("relates_to", "关联", "A 和 B 有关联（通用关系）", 1, 0, None, None, None),
 ]
 
+# 允许使用的关系类型白名单（禁止新建/使用集合之外的关系类型）
+# 由 DEFAULT_RELATION_TYPES 派生，供 modify_ontology / ingest_document 工具层校验复用
+WHITELIST_RELATION_TYPES = frozenset(
+    rt[0] for rt in DEFAULT_RELATION_TYPES
+)
+
 
 def get_db_path():
     """获取数据库文件路径。可通过环境变量覆盖。"""
@@ -174,35 +180,15 @@ def get_connection(db_path=None):
 
 
 def _migrate_relation_time_fields(conn):
-    """自动迁移 relations 表，补充 valid_from / valid_until 字段（幂等）。"""
-    try:
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(relations)").fetchall()}
-        changed = False
-        if "valid_from" not in cols:
-            conn.execute("ALTER TABLE relations ADD COLUMN valid_from TEXT")
-            changed = True
-        if "valid_until" not in cols:
-            conn.execute("ALTER TABLE relations ADD COLUMN valid_until TEXT")
-            changed = True
-        if changed:
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_relations_valid_from ON relations(valid_from)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_relations_valid_until ON relations(valid_until)")
-            conn.commit()
-    except Exception:
-        # 迁移失败不应阻塞连接（例如表结构异常时静默降级）
-        pass
+    """自动迁移 relations 表，补充 valid_from / valid_until 字段（幂等）。委托给 Istaroth。"""
+    from .Istaroth import migrate_time_fields
+    migrate_time_fields(conn)
 
 
 def _migrate_entity_time_fields(conn):
-    """自动迁移 entities 表，补充 available_from 字段（幂等）。"""
-    try:
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(entities)").fetchall()}
-        if "available_from" not in cols:
-            conn.execute("ALTER TABLE entities ADD COLUMN available_from TEXT")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_entities_available_from ON entities(available_from)")
-            conn.commit()
-    except Exception:
-        pass
+    """自动迁移 entities 表，补充 available_from 字段（幂等）。委托给 Istaroth。"""
+    from .Istaroth import migrate_time_fields
+    migrate_time_fields(conn)
 
 
 def _migrate_relation_type_fields(conn):

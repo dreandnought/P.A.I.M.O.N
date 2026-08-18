@@ -10,6 +10,7 @@ from typing import List, Optional
 from pydantic import BaseModel, Field, field_validator
 
 from parser.llm_parser import extract_entities_and_relations
+from models.schema import WHITELIST_RELATION_TYPES
 from models.entity import (
     entity_exists,
     find_or_create_entity,
@@ -177,6 +178,15 @@ def _build_change_plan(extraction, db_path):
             target_id = target["id"] if target else None
 
         if source_id and target_id:
+            # 关系类型白名单校验：非法类型不写入，计入 skipped
+            if r["relation_type"] not in WHITELIST_RELATION_TYPES:
+                skipped_relations.append({
+                    "source_name": r["source_name"],
+                    "relation_type": r["relation_type"],
+                    "target_name": r["target_name"],
+                    "reason": f"关系类型非白名单: {r['relation_type']}（仅允许 {sorted(WHITELIST_RELATION_TYPES)}）",
+                })
+                continue
             relations_create.append({
                 "source_id": source_id,
                 "relation_type": r["relation_type"],
@@ -209,6 +219,7 @@ def _execute_plan(plan, title, content, db_path):
     created_entities = []
     updated_entities = []
     created_relations = []
+    skipped_relations = []
 
     name_to_id = {}
 
@@ -254,6 +265,16 @@ def _execute_plan(plan, title, content, db_path):
         source_id = r["source_id"]
         target_id = r["target_id"]
 
+        # 关系类型白名单兜底：非法类型不写入数据库
+        if r["relation_type"] not in WHITELIST_RELATION_TYPES:
+            skipped_relations.append({
+                "source_name": source_id,
+                "relation_type": r["relation_type"],
+                "target_name": target_id,
+                "reason": f"关系类型非白名单: {r['relation_type']}（仅允许 {sorted(WHITELIST_RELATION_TYPES)}）",
+            })
+            continue
+
         # 根据端点实体的 available_from 计算虚关系化
         valid_from = r.get("valid_from")
         valid_until = r.get("valid_until")
@@ -287,7 +308,7 @@ def _execute_plan(plan, title, content, db_path):
         "created_entities": created_entities,
         "updated_entities": updated_entities,
         "created_relations": created_relations,
-        "skipped_relations": plan.get("skipped_relations", []),
+        "skipped_relations": plan.get("skipped_relations", []) + skipped_relations,
     }
 
 

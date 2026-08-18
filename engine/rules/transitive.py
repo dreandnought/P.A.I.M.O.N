@@ -8,7 +8,7 @@
 from engine.core import Rule
 from engine.result import InferenceResult
 from models.schema import get_connection
-from datetime import datetime, timezone
+from models.Istaroth import cte_time_predicates, cte_time_params_list
 
 
 class TransitiveClosureRule(Rule):
@@ -34,7 +34,6 @@ class TransitiveClosureRule(Rule):
         conn = get_connection(db_path)
         results = []
         max_depth = 10
-        now = datetime.now(timezone.utc).isoformat()
 
         # 查询所有 transitive=1 的关系类型
         transitive_types = conn.execute(
@@ -45,20 +44,15 @@ class TransitiveClosureRule(Rule):
             rtype = rt["id"]
             rtype_name = rt["name"]
 
+            # 递归 CTE 中过滤未来/过期关系（由 Istaroth 统一生成谓词与参数）
+            future_cond, expired_cond = cte_time_predicates(
+                "r", include_future, include_expired
+            )
+            base_params = cte_time_params_list(include_future, include_expired)
+
             for eid in entity_ids:
-                # 递归 CTE 中过滤未来/过期关系
-                future_cond = "" if include_future else " AND (r.valid_from IS NULL OR r.valid_from <= ?) "
-                expired_cond = "" if include_expired else " AND (r.valid_until IS NULL OR r.valid_until > ?) "
-                params = [eid, rtype]
-                if not include_future:
-                    params.append(now)
-                if not include_expired:
-                    params.append(now)
-                params += [rtype, max_depth]
-                if not include_future:
-                    params.append(now)
-                if not include_expired:
-                    params.append(now)
+                # 初始 CTE 参数 + 递归 CTE 参数（同一组 now 参数在两个位置复用）
+                params = [eid, rtype] + base_params + [rtype, max_depth] + base_params
 
                 # 用递归 CTE 计算传递闭包
                 rows = conn.execute(

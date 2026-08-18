@@ -10,7 +10,7 @@
 from engine.core import Checker
 from engine.result import InferenceResult
 from models.schema import get_connection
-from datetime import datetime, timezone
+from models.Istaroth import cte_time_predicates, cte_time_params_list, time_filter_sql
 
 
 # 类型兼容性规则：哪些关系类型可以连接哪些实体类型对
@@ -78,18 +78,10 @@ class ConsistencyChecker(Checker):
         """检查关系两端实体类型是否兼容"""
         conn = get_connection(db_path)
         issues = []
-        now = datetime.now(timezone.utc).isoformat()
 
         placeholders = ",".join("?" * len(entity_ids))
-        conditions = []
-        params = list(entity_ids) + list(entity_ids)
-        if not include_future:
-            conditions.append("(r.valid_from IS NULL OR r.valid_from <= ?)")
-            params.append(now)
-        if not include_expired:
-            conditions.append("(r.valid_until IS NULL OR r.valid_until > ?)")
-            params.append(now)
-        time_sql = (" AND " + " AND ".join(conditions)) if conditions else ""
+        time_sql, time_extra = time_filter_sql("r", include_future, include_expired)
+        params = list(entity_ids) + list(entity_ids) + time_extra
 
         rows = conn.execute(
             f"""SELECT r.source_id, r.target_id, r.type_id,
@@ -197,26 +189,15 @@ class ConsistencyChecker(Checker):
         """检测循环依赖链（A->B->C->A）"""
         conn = get_connection(db_path)
         issues = []
-        now = datetime.now(timezone.utc).isoformat()
 
-        future_cond = "" if include_future else " AND (r.valid_from IS NULL OR r.valid_from <= ?) "
-        expired_cond = "" if include_expired else " AND (r.valid_until IS NULL OR r.valid_until > ?) "
+        future_cond, expired_cond = cte_time_predicates("r", include_future, include_expired)
+        base_params = cte_time_params_list(include_future, include_expired)
 
         for eid in entity_ids:
             # 使用递归 CTE 检测 depends_on 循环
             try:
-                # 参数顺序：初始CTE[source_id, valid_from?, valid_until?] + 递归CTE[valid_from?, valid_until?]
-                future_cond = "" if include_future else " AND (r.valid_from IS NULL OR r.valid_from <= ?) "
-                expired_cond = "" if include_expired else " AND (r.valid_until IS NULL OR r.valid_until > ?) "
-                params = [eid]
-                if not include_future:
-                    params.append(now)
-                if not include_expired:
-                    params.append(now)
-                if not include_future:
-                    params.append(now)
-                if not include_expired:
-                    params.append(now)
+                # 参数顺序：初始CTE[source_id, base_params] + 递归CTE[base_params]
+                params = [eid] + base_params + base_params
                 cycle = conn.execute(
                     f"""WITH RECURSIVE dep_chain AS (
                         SELECT r.target_id, 1 AS depth, r.source_id AS path_start
