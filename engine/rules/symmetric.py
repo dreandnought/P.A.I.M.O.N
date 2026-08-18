@@ -8,6 +8,7 @@
 from engine.core import Rule
 from engine.result import InferenceResult
 from models.schema import get_connection
+from models.Istaroth import time_filter_sql
 
 
 class SymmetricRule(Rule):
@@ -29,7 +30,7 @@ class SymmetricRule(Rule):
         conn.close()
         return row["cnt"] > 0
 
-    def apply(self, entity_ids, db_path=None):
+    def apply(self, entity_ids, db_path=None, include_future=False, include_expired=False):
         conn = get_connection(db_path)
         results = []
         entity_set = set(entity_ids)
@@ -43,6 +44,10 @@ class SymmetricRule(Rule):
             rtype_name = rt["name"]
             placeholders = ",".join("?" * len(entity_ids))
 
+            # 时间过滤条件（由 Istaroth 统一生成）
+            time_sql, time_params = time_filter_sql("r", include_future, include_expired)
+            params = [rtype] + list(entity_ids) + list(entity_ids) + time_params
+
             # 查询涉及入口实体的对称关系
             rows = conn.execute(
                 f"""SELECT r.source_id, r.target_id, r.confidence,
@@ -51,8 +56,8 @@ class SymmetricRule(Rule):
                     JOIN entities e1 ON r.source_id = e1.id
                     JOIN entities e2 ON r.target_id = e2.id
                     WHERE r.type_id = ?
-                    AND (r.source_id IN ({placeholders}) OR r.target_id IN ({placeholders}))""",
-                [rtype] + list(entity_ids) + list(entity_ids)
+                    AND (r.source_id IN ({placeholders}) OR r.target_id IN ({placeholders})){time_sql}""",
+                params
             ).fetchall()
 
             seen = set()

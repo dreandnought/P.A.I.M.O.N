@@ -8,6 +8,7 @@
 from engine.core import Rule
 from engine.result import InferenceResult
 from models.schema import get_connection
+from models.Istaroth import cte_time_predicates, cte_time_params_list
 
 
 class TransitiveClosureRule(Rule):
@@ -29,7 +30,7 @@ class TransitiveClosureRule(Rule):
         conn.close()
         return row["cnt"] > 0
 
-    def apply(self, entity_ids, db_path=None):
+    def apply(self, entity_ids, db_path=None, include_future=False, include_expired=False):
         conn = get_connection(db_path)
         results = []
         max_depth = 10
@@ -43,18 +44,27 @@ class TransitiveClosureRule(Rule):
             rtype = rt["id"]
             rtype_name = rt["name"]
 
+            # 递归 CTE 中过滤未来/过期关系（由 Istaroth 统一生成谓词与参数）
+            future_cond, expired_cond = cte_time_predicates(
+                "r", include_future, include_expired
+            )
+            base_params = cte_time_params_list(include_future, include_expired)
+
             for eid in entity_ids:
+                # 初始 CTE 参数 + 递归 CTE 参数（同一组 now 参数在两个位置复用）
+                params = [eid, rtype] + base_params + [rtype, max_depth] + base_params
+
                 # 用递归 CTE 计算传递闭包
                 rows = conn.execute(
-                    """WITH RECURSIVE closure AS (
+                    f"""WITH RECURSIVE closure AS (
                         SELECT target_id, 1 AS depth, source_id AS path_start
-                        FROM relations
-                        WHERE source_id = ? AND type_id = ?
+                        FROM relations r
+                        WHERE source_id = ? AND type_id = ?{future_cond}{expired_cond}
                         UNION ALL
                         SELECT r.target_id, c.depth + 1, c.path_start
                         FROM relations r
                         JOIN closure c ON r.source_id = c.target_id
-                        WHERE r.type_id = ? AND c.depth < ?
+                        WHERE r.type_id = ? AND c.depth < ?{future_cond}{expired_cond}
                     )
                     SELECT DISTINCT c.target_id, c.depth, c.path_start,
                            e.name AS target_name
@@ -63,7 +73,7 @@ class TransitiveClosureRule(Rule):
                     WHERE c.target_id != c.path_start
                       AND e.status = 'active'
                     ORDER BY c.depth""",
-                    (eid, rtype, rtype, max_depth)
+                    params
                 ).fetchall()
 
                 for row in rows:

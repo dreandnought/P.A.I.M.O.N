@@ -7,6 +7,7 @@
 from engine.core import Rule
 from engine.result import InferenceResult
 from models.schema import get_connection
+from models.Istaroth import cte_time_predicates, cte_time_params_list, time_filter_sql
 
 
 class ConstraintPropagationRule(Rule):
@@ -28,41 +29,48 @@ class ConstraintPropagationRule(Rule):
         conn.close()
         return row["cnt"] > 0
 
-    def apply(self, entity_ids, db_path=None):
+    def apply(self, entity_ids, db_path=None, include_future=False, include_expired=False):
         conn = get_connection(db_path)
         results = []
 
         for eid in entity_ids:
-            # 1. 找到直接约束当前实体的约束
+            # 1. 找到直接约束当前实体的约束（时间过滤由 Istaroth 生成）
+            time_sql, cparams_extra = time_filter_sql("r", include_future, include_expired)
+            cparams = [eid] + cparams_extra
+
             constraints = conn.execute(
-                """SELECT r.source_id AS constraint_source, r.confidence,
+                f"""SELECT r.source_id AS constraint_source, r.confidence,
                           e1.name AS constraint_name,
                           e2.name AS constrained_name
                    FROM relations r
                    JOIN entities e1 ON r.source_id = e1.id
                    JOIN entities e2 ON r.target_id = e2.id
-                   WHERE r.target_id = ? AND r.type_id = 'constrains'""",
-                (eid,)
+                   WHERE r.target_id = ? AND r.type_id = 'constrains'{time_sql}""",
+                cparams
             ).fetchall()
 
             if not constraints:
                 continue
 
-            # 2. 找到当前实体包含的所有子实体（递归）
+            # 2. 找到当前实体包含的所有子实体（递归 CTE，时间过滤由 Istaroth 生成）
+            future_cond, expired_cond = cte_time_predicates(
+                "r", include_future, include_expired
+            )
+            cparams2 = [eid] + cte_time_params_list(include_future, include_expired) * 2
             children = conn.execute(
-                """WITH RECURSIVE containment AS (
-                    SELECT target_id FROM relations
-                    WHERE source_id = ? AND type_id = 'contains'
+                f"""WITH RECURSIVE containment AS (
+                    SELECT r.target_id FROM relations r
+                    WHERE r.source_id = ? AND r.type_id = 'contains'{future_cond}{expired_cond}
                     UNION ALL
                     SELECT r.target_id FROM relations r
                     JOIN containment c ON r.source_id = c.target_id
-                    WHERE r.type_id = 'contains'
+                    WHERE r.type_id = 'contains'{future_cond}{expired_cond}
                 )
                 SELECT DISTINCT c.target_id, e.name AS child_name
                 FROM containment c
                 JOIN entities e ON c.target_id = e.id
                 WHERE e.status = 'active'""",
-                (eid,)
+                cparams2
             ).fetchall()
 
             # 3. 约束传播：父实体的约束传递给子实体

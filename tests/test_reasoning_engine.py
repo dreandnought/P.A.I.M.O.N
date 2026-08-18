@@ -31,6 +31,9 @@ from engine.checker import ConsistencyChecker
 
 def _setup_test_db():
     """创建测试数据库并填充测试数据"""
+    from engine.cache import get_cache
+    get_cache().invalidate_all()  # 清除缓存，避免跨测试干扰
+
     fd, db_path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
     init_db(db_path)
@@ -214,6 +217,9 @@ def test_inheritance():
 
 def test_conflict_detection():
     """测试冲突检测：构造 depends_on + conflicts_with 的矛盾"""
+    from engine.cache import get_cache
+    get_cache().invalidate_all()
+
     db_path = _setup_test_db()
     try:
         conn = get_connection(db_path)
@@ -224,6 +230,9 @@ def test_conflict_detection():
         )
         conn.commit()
         conn.close()
+
+        # 失效缓存，确保重新推理
+        get_cache().invalidate_all()
 
         engine = _create_engine(db_path)
         output = engine.run(["func:user_login"])

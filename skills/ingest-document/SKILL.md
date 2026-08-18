@@ -61,6 +61,31 @@ dry_run 阶段：
 - dry_run 时：返回 `plan` 和 `extraction_summary`
 - 执行写入时：返回 `document`、`created_entities`、`updated_entities`、`created_relations`
 
+## ⚠️ 关系类型白名单（重要约束）
+
+**禁止创建实体关系类型之外的新关系类型。**
+
+抽取关系时，`relation_type` 只能从以下 **10 种预设关系类型**中选择语义最相近的一种：
+
+| 类型 | 含义 | 示例 |
+|------|------|------|
+| `depends_on` | A 依赖 B 才能正常工作 | 用户登录 → 依赖 → 短信验证码服务 |
+| `causes` | A 的发生会导致 B | 库存超卖 → 导致 → 订单失败 |
+| `constrains` | A 对 B 有约束条件 | 支付 → 约束 → 订单确认之后 |
+| `impacts` | 修改 A 会影响 B | 修改认证模块 → 影响 → 登录/注册 |
+| `conflicts_with` | A 和 B 互斥或冲突 | 方案A → 冲突 → 方案B |
+| `derived_from` | A 是从 B 派生/衍生出来的 | 风控报告 → 派生自 → 交易流水 |
+| `implements` | A 实现了 B（接口/需求） | 登录模块 → 实现 → 登录需求 |
+| `contains` | A 包含 B（父子关系） | 订单模块 → 包含 → 订单查询 |
+| `refines` | A 是对 B 的细化/补充 | 支付流程 → 细化 → 退款规则 |
+| `relates_to` | A 和 B 有关联（通用兜底） | （无更贴切类型时使用） |
+
+**选择规则：**
+1. 优先选语义最精确的类型；没有精确匹配时，选最相近的类型；
+2. 仍无法匹配时，统一用 `relates_to`（通用关联）兜底；
+3. **绝不捏造或发明新关系类型字符串**（如 `triggers`、`blocks`），应映射到上述 10 种；
+4. `relations.create` 中出现的 `relation_type` 若不在上述 10 种之内，视为非法，应修正后再提交。
+
 ## 注意事项
 
 - **再次执行时建议同时传入原始 `content`**，否则文档溯源记录的 content_hash/word_count 可能为空

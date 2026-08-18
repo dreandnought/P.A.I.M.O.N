@@ -17,6 +17,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models.schema import get_connection, get_db_path, init_db
 from models.entity import get_entity, get_entity_by_name, search_entities, list_all_entities
 from models.relation import get_entity_relations
+from engine.cache import get_cache
+from datetime import datetime, timezone
+
+
+def _now_iso():
+    """当前 UTC ISO 8601 时间字符串。"""
+    return datetime.now(timezone.utc).isoformat()
+from engine.feedback import get_feedback_stats, list_recent_feedback
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(BASE_DIR)
@@ -98,12 +106,16 @@ def api_stats():
 
 @app.route("/api/graph")
 def api_graph():
-    """Full graph data: all nodes and edges in one payload."""
+    """Full graph data: all nodes and edges in one payload.
+
+    返回所有实体（含未来实体）和所有关系（含虚关系），并附带时间字段，
+    供前端区分实/虚关系与当前/未来实体。
+    """
     conn = get_connection()
 
     nodes = conn.execute(
         "SELECT e.id, e.name, e.type_id, et.name AS type_name, "
-        "e.description, e.status, e.confidence "
+        "e.description, e.status, e.confidence, e.available_from "
         "FROM entities e JOIN entity_types et ON e.type_id = et.id "
         "WHERE e.status = 'active' "
         "ORDER BY e.type_id, e.name"
@@ -111,13 +123,16 @@ def api_graph():
 
     edges = conn.execute(
         "SELECT r.id, r.type_id, rt.name AS type_name, "
-        "r.source_id, r.target_id, r.confidence, r.weight, r.metadata "
+        "r.source_id, r.target_id, r.confidence, r.weight, r.metadata, "
+        "r.valid_from, r.valid_until "
         "FROM relations r JOIN relation_types rt ON r.type_id = rt.id "
         "ORDER BY r.confidence DESC"
     ).fetchall()
 
     conn.close()
+    now = _now_iso()
     return jsonify({
+        "now": now,
         "nodes": [dict(n) for n in nodes],
         "edges": [dict(e) for e in edges],
     })
@@ -138,7 +153,7 @@ def api_entities():
     else:
         rows = conn.execute(
             "SELECT e.id, e.name, e.type_id, et.name AS type_name, "
-            "e.description, e.status, e.confidence, e.source "
+            "e.description, e.status, e.confidence, e.source, e.available_from "
             "FROM entities e JOIN entity_types et ON e.type_id = et.id "
             "ORDER BY e.type_id, e.name"
         ).fetchall()
@@ -148,28 +163,47 @@ def api_entities():
 
 @app.route("/api/entity/<entity_id>")
 def api_entity_detail(entity_id):
-    """Entity detail with all relations."""
+    """Entity detail with all relations.
+
+    默认包含虚关系（include_future=true），前端按虚实区分显示。
+    """
     entity = get_entity(entity_id)
     if not entity:
         return jsonify({"error": "Entity not found"}), 404
-    relations = get_entity_relations(entity_id)
-    return jsonify({"entity": entity, "relations": relations})
+    include_future = request.args.get("include_future", "true").lower() == "true"
+    include_expired = request.args.get("include_expired", "false").lower() == "true"
+    relations = get_entity_relations(entity_id, include_future=include_future, include_expired=include_expired)
+    return jsonify({"entity": entity, "relations": relations, "now": _now_iso()})
 
 
 @app.route("/api/relations")
 def api_relations():
     """List all relations."""
+    include_future = request.args.get("include_future", "false").lower() == "true"
+    include_expired = request.args.get("include_expired", "false").lower() == "true"
     conn = get_connection()
+    conditions = []
+    params = []
+    if not include_future:
+        conditions.append("(r.valid_from IS NULL OR r.valid_from <= ?)")
+        params.append(_now_iso())
+    if not include_expired:
+        conditions.append("(r.valid_until IS NULL OR r.valid_until > ?)")
+        params.append(_now_iso())
+    where_sql = (" WHERE " + " AND ".join(conditions)) if conditions else ""
     rows = conn.execute(
         "SELECT r.id, r.type_id, rt.name AS type_name, "
         "r.source_id, r.target_id, r.confidence, r.weight, r.metadata, "
+        "r.valid_from, r.valid_until, "
         "se.name AS source_name, se.type_id AS source_type, "
         "te.name AS target_name, te.type_id AS target_type "
         "FROM relations r "
         "JOIN relation_types rt ON r.type_id = rt.id "
         "JOIN entities se ON r.source_id = se.id "
         "JOIN entities te ON r.target_id = te.id "
-        "ORDER BY r.confidence DESC"
+        f"{where_sql} "
+        "ORDER BY r.confidence DESC",
+        params,
     ).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
@@ -317,6 +351,89 @@ def api_test_llm_config():
         return jsonify({"ok": True, "message": "Connection successful"})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 200
+
+
+# ── Phase 4: Reasoning & Feedback APIs ──────────────────────────────
+
+@app.route("/api/reasoning/run", methods=["POST"])
+def api_reasoning_run():
+    """Run reasoning engine on specified entities."""
+    data = request.get_json() or {}
+    entity_ids = data.get("entity_ids", [])
+    entity_names = data.get("entity_names", [])
+    query = data.get("query")
+    rules_only = data.get("rules_only")
+
+    if not entity_ids and not entity_names and not query:
+        return jsonify({"error": "Provide entity_ids, entity_names, or query"}), 400
+
+    from tools.reason_ontology import _resolve_entity_ids, _build_engine
+
+    resolved_ids = _resolve_entity_ids(entity_ids, entity_names, query)
+    if not resolved_ids:
+        return jsonify({"error": "No matching entities found"}), 404
+
+    engine = _build_engine(None, rules_only)
+    output = engine.run(resolved_ids)
+
+    return jsonify({
+        "entity_ids": resolved_ids,
+        "inferences": [r.to_dict() for r in output.inferences],
+        "conflicts": [r.to_dict() for r in output.conflicts],
+        "stats": output.stats,
+        "llm_summary": output.to_llm_format(),
+    })
+
+
+@app.route("/api/cache/stats")
+def api_cache_stats():
+    """Cache statistics."""
+    return jsonify(get_cache().stats())
+
+
+@app.route("/api/cache/clear", methods=["POST"])
+def api_cache_clear():
+    """Clear all cache."""
+    get_cache().invalidate_all()
+    return jsonify({"status": "cleared"})
+
+
+@app.route("/api/feedback/stats")
+def api_feedback_stats():
+    """Feedback statistics."""
+    return jsonify(get_feedback_stats())
+
+
+@app.route("/api/feedback/list")
+def api_feedback_list():
+    """List recent feedback."""
+    limit = int(request.args.get("limit", 20))
+    return jsonify({"feedback": list_recent_feedback(limit)})
+
+
+@app.route("/api/feedback/submit", methods=["POST"])
+def api_feedback_submit():
+    """Submit feedback for a prediction."""
+    from engine.feedback import submit_feedback
+
+    data = request.get_json() or {}
+    prediction_id = data.get("prediction_id")
+    status = data.get("status")
+    actual_result = data.get("actual_result")
+    developer_note = data.get("developer_note")
+    pr_id = data.get("pr_id")
+
+    if not prediction_id or not status:
+        return jsonify({"error": "prediction_id and status are required"}), 400
+
+    result = submit_feedback(
+        prediction_id=prediction_id,
+        status=status,
+        actual_result=actual_result,
+        developer_note=developer_note,
+        pr_id=pr_id,
+    )
+    return jsonify(result)
 
 
 if __name__ == "__main__":

@@ -10,12 +10,14 @@ from typing import List, Optional
 from pydantic import BaseModel, Field, field_validator
 
 from parser.llm_parser import extract_entities_and_relations
+from models.schema import WHITELIST_RELATION_TYPES
 from models.entity import (
     entity_exists,
     find_or_create_entity,
     get_entity,
     resolve_entity_by_name_or_id,
     update_entity,
+    compute_relation_time_from_endpoints,
 )
 from models.relation import create_relation
 from models.document import create_document
@@ -29,6 +31,7 @@ class EntityChangeItem(BaseModel):
     type: str = Field(..., description="实体类型 ID")
     description: str = Field(default="", description="实体描述")
     confidence: float = Field(default=0.8, ge=0.0, le=1.0, description="置信度")
+    available_from: Optional[str] = Field(default=None, description="实体生效时间（ISO 8601），None=立即生效")
 
 
 class RelationChangeItem(BaseModel):
@@ -39,6 +42,8 @@ class RelationChangeItem(BaseModel):
     relation_type: str = Field(..., description="关系类型 ID")
     description: str = Field(default="", description="关系描述")
     confidence: float = Field(default=0.8, ge=0.0, le=1.0, description="置信度")
+    valid_from: Optional[str] = Field(default=None, description="关系生效时间（ISO 8601）")
+    valid_until: Optional[str] = Field(default=None, description="关系失效时间（ISO 8601）")
 
 
 class SkippedRelationItem(BaseModel):
@@ -153,6 +158,7 @@ def _build_change_plan(extraction, db_path):
             "type": e["type"],
             "description": e["description"],
             "confidence": e["confidence"],
+            "available_from": e.get("available_from"),
         })
         name_to_id[e["name"]] = allocated_id
         existing_ids.add(allocated_id)
@@ -172,12 +178,23 @@ def _build_change_plan(extraction, db_path):
             target_id = target["id"] if target else None
 
         if source_id and target_id:
+            # 关系类型白名单校验：非法类型不写入，计入 skipped
+            if r["relation_type"] not in WHITELIST_RELATION_TYPES:
+                skipped_relations.append({
+                    "source_name": r["source_name"],
+                    "relation_type": r["relation_type"],
+                    "target_name": r["target_name"],
+                    "reason": f"关系类型非白名单: {r['relation_type']}（仅允许 {sorted(WHITELIST_RELATION_TYPES)}）",
+                })
+                continue
             relations_create.append({
                 "source_id": source_id,
                 "relation_type": r["relation_type"],
                 "target_id": target_id,
                 "description": r["description"],
                 "confidence": r["confidence"],
+                "valid_from": r.get("valid_from"),
+                "valid_until": r.get("valid_until"),
             })
         else:
             skipped_relations.append({
@@ -202,6 +219,7 @@ def _execute_plan(plan, title, content, db_path):
     created_entities = []
     updated_entities = []
     created_relations = []
+    skipped_relations = []
 
     name_to_id = {}
 
@@ -214,6 +232,7 @@ def _execute_plan(plan, title, content, db_path):
             confidence=e.get("confidence", 0.8),
             source="llm",
             source_doc_id=doc_id,
+            available_from=e.get("available_from"),
             db_path=db_path,
         )
         name_to_id[e["name"]] = entity["id"]
@@ -245,6 +264,31 @@ def _execute_plan(plan, title, content, db_path):
     for r in plan["relations"]["create"]:
         source_id = r["source_id"]
         target_id = r["target_id"]
+
+        # 关系类型白名单兜底：非法类型不写入数据库
+        if r["relation_type"] not in WHITELIST_RELATION_TYPES:
+            skipped_relations.append({
+                "source_name": source_id,
+                "relation_type": r["relation_type"],
+                "target_name": target_id,
+                "reason": f"关系类型非白名单: {r['relation_type']}（仅允许 {sorted(WHITELIST_RELATION_TYPES)}）",
+            })
+            continue
+
+        # 根据端点实体的 available_from 计算虚关系化
+        valid_from = r.get("valid_from")
+        valid_until = r.get("valid_until")
+        metadata = {"description": r.get("description", "")}
+
+        if not valid_from:
+            # 端点为未来实体时，自动置 valid_from = max(端点未来时间)
+            computed_from, caused_by = compute_relation_time_from_endpoints(
+                source_id, target_id, db_path
+            )
+            if computed_from:
+                valid_from = computed_from
+                metadata["time_caused_by_entities"] = caused_by
+
         relation = create_relation(
             type_id=r["relation_type"],
             source_id=source_id,
@@ -252,8 +296,10 @@ def _execute_plan(plan, title, content, db_path):
             confidence=r.get("confidence", 0.8),
             source="llm",
             source_doc_id=doc_id,
-            metadata={"description": r.get("description", "")},
+            metadata=metadata,
             db_path=db_path,
+            valid_from=valid_from,
+            valid_until=valid_until,
         )
         created_relations.append(relation)
 
@@ -262,7 +308,7 @@ def _execute_plan(plan, title, content, db_path):
         "created_entities": created_entities,
         "updated_entities": updated_entities,
         "created_relations": created_relations,
-        "skipped_relations": plan.get("skipped_relations", []),
+        "skipped_relations": plan.get("skipped_relations", []) + skipped_relations,
     }
 
 

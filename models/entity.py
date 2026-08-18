@@ -1,8 +1,38 @@
 """
 Entity CRUD 操作。
+
+所有时序相关的辅助函数（_now_iso、activate_entity、get_future_entities、
+compute_relation_time_from_endpoints）均委托给 models.Istaroth，本文件保留
+向后兼容的别名。
 """
 
+import json
+
 from .schema import get_connection
+from .Istaroth import (
+    _now_iso,
+    activate_entity,
+    activate_relation,
+    compute_relation_time_from_endpoints,
+    get_future_entities,
+)
+
+__all__ = [
+    "get_entity",
+    "get_entity_by_name",
+    "search_entities",
+    "list_all_entities",
+    "get_entities_by_ids",
+    "entity_exists",
+    "create_entity",
+    "update_entity",
+    "delete_entity",
+    "resolve_entity_by_name_or_id",
+    "find_or_create_entity",
+    "get_future_entities",
+    "compute_relation_time_from_endpoints",
+    "activate_entity",
+]
 
 
 def get_entity(entity_id, db_path=None):
@@ -35,16 +65,22 @@ def get_entity_by_name(name, db_path=None):
     return None
 
 
-def search_entities(query, limit=10, db_path=None):
-    """关键词搜索实体（匹配名称和描述）。"""
+def search_entities(query, limit=10, db_path=None, include_future=False):
+    """关键词搜索实体（匹配名称和描述）。
+
+    默认排除未来生效实体（available_from > now）；include_future=True 时返回全部。
+    """
     conn = get_connection(db_path)
     like = f"%{query}%"
+    now = _now_iso()
+    future_filter = "" if include_future else " AND (e.available_from IS NULL OR e.available_from <= ?)"
+    params = (like, like) + (() if include_future else (now,)) + (limit,)
     rows = conn.execute(
         "SELECT e.*, et.name AS type_name FROM entities e "
         "JOIN entity_types et ON e.type_id = et.id "
-        "WHERE e.name LIKE ? OR e.description LIKE ? "
+        f"WHERE (e.name LIKE ? OR e.description LIKE ?){future_filter} "
         "ORDER BY e.confidence DESC LIMIT ?",
-        (like, like, limit),
+        params,
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -96,21 +132,25 @@ def create_entity(
     confidence=0.8,
     source="llm",
     source_doc_id=None,
+    available_from=None,
     db_path=None,
 ):
     """创建实体。"""
+    from engine.cache import invalidate_on_entity_change
+
     conn = get_connection(db_path)
     conn.execute(
         """
         INSERT INTO entities (
             id, type_id, name, description, status, confidence,
-            source, source_doc_id, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, datetime('now'), datetime('now'))
+            source, source_doc_id, available_from, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, datetime('now'), datetime('now'))
         """,
-        (entity_id, type_id, name, description, confidence, source, source_doc_id),
+        (entity_id, type_id, name, description, confidence, source, source_doc_id, available_from),
     )
     conn.commit()
     conn.close()
+    invalidate_on_entity_change(entity_id)
     return get_entity(entity_id, db_path)
 
 
@@ -119,12 +159,13 @@ def update_entity(entity_id, updates, db_path=None):
 
     updates 为字典，可包含：name, description, type_id, status, confidence, tags 等。
     """
-    allowed = {"name", "description", "type_id", "status", "confidence", "tags", "properties", "source_ref"}
+    from engine.cache import invalidate_on_entity_change
+
+    allowed = {"name", "description", "type_id", "status", "confidence", "tags", "properties", "source_ref", "available_from"}
     filtered = {k: v for k, v in updates.items() if k in allowed}
     if not filtered:
         return get_entity(entity_id, db_path)
 
-    filtered["updated_at"] = "datetime('now')"
     set_clause = ", ".join(f"{k} = ?" for k in filtered if k != "updated_at")
     # 手动追加 updated_at
     set_clause += ", updated_at = datetime('now')"
@@ -138,16 +179,28 @@ def update_entity(entity_id, updates, db_path=None):
     )
     conn.commit()
     conn.close()
+    invalidate_on_entity_change(entity_id)
     return get_entity(entity_id, db_path)
 
 
 def delete_entity(entity_id, db_path=None):
     """删除实体及其关联关系。"""
+    from engine.cache import invalidate_on_entity_change
+
     conn = get_connection(db_path)
+    # 先找出所有关联实体 ID，用于失效缓存
+    related_rows = conn.execute(
+        "SELECT DISTINCT source_id FROM relations WHERE target_id = ? "
+        "UNION SELECT DISTINCT target_id FROM relations WHERE source_id = ?",
+        (entity_id, entity_id)
+    ).fetchall()
     conn.execute("DELETE FROM relations WHERE source_id = ? OR target_id = ?", (entity_id, entity_id))
     cur = conn.execute("DELETE FROM entities WHERE id = ?", (entity_id,))
     conn.commit()
     conn.close()
+    invalidate_on_entity_change(entity_id)
+    for r in related_rows:
+        invalidate_on_entity_change(r["source_id"] if "source_id" in r.keys() else r[0])
     return cur.rowcount > 0
 
 
@@ -169,6 +222,7 @@ def find_or_create_entity(
     confidence=0.8,
     source="llm",
     source_doc_id=None,
+    available_from=None,
     db_path=None,
 ):
     """查找或创建实体。
@@ -205,6 +259,34 @@ def find_or_create_entity(
         confidence=confidence,
         source=source,
         source_doc_id=source_doc_id,
+        available_from=available_from,
         db_path=db_path,
     )
     return entity, True
+
+
+def get_future_entities(db_path=None, limit=100):
+    """查询所有未来生效的实体（供规划/预览）。"""
+    from .Istaroth import get_future_entities as _get_future_entities
+    return _get_future_entities(db_path=db_path, limit=limit)
+
+
+def compute_relation_time_from_endpoints(source_id, target_id, db_path=None):
+    """根据端点实体的 available_from 计算关系应有的 valid_from。
+
+    返回 (valid_from, caused_by_entity_ids)：
+    - 端点中 available_from > now 的，取最大值作为 valid_from
+    - caused_by_entity_ids 为这些未来端点 id 列表（供 metadata 标记级联激活）
+    - 全部端点已生效则返回 (None, [])
+    """
+    from .Istaroth import compute_relation_time_from_endpoints as _compute
+    return _compute(source_id, target_id, db_path)
+
+
+def activate_entity(entity_id, db_path=None):
+    """将未来实体转正（available_from = now），并级联激活其导致的虚关系。
+
+    返回更新后的实体 dict，若不存在返回 None。
+    """
+    from .Istaroth import activate_entity as _activate_entity
+    return _activate_entity(entity_id, db_path=db_path)

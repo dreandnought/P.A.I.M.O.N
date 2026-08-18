@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS entities (
     source_ref      TEXT,
     properties      TEXT DEFAULT '{}',
     tags            TEXT DEFAULT '[]',
+    available_from  TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -53,6 +54,7 @@ CREATE TABLE IF NOT EXISTS entities (
 CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(type_id);
 CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name);
 CREATE INDEX IF NOT EXISTS idx_entities_status ON entities(status);
+CREATE INDEX IF NOT EXISTS idx_entities_available_from ON entities(available_from);
 
 -- 关系实例表（核心）
 CREATE TABLE IF NOT EXISTS relations (
@@ -65,6 +67,8 @@ CREATE TABLE IF NOT EXISTS relations (
     source          TEXT NOT NULL DEFAULT 'manual',
     source_doc_id   TEXT,
     metadata        TEXT DEFAULT '{}',
+    valid_from      TEXT,
+    valid_until     TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(type_id, source_id, target_id)
@@ -75,6 +79,8 @@ CREATE INDEX IF NOT EXISTS idx_relations_target ON relations(target_id);
 CREATE INDEX IF NOT EXISTS idx_relations_type ON relations(type_id);
 CREATE INDEX IF NOT EXISTS idx_relations_st ON relations(source_id, type_id);
 CREATE INDEX IF NOT EXISTS idx_relations_ts ON relations(target_id, type_id);
+CREATE INDEX IF NOT EXISTS idx_relations_valid_from ON relations(valid_from);
+CREATE INDEX IF NOT EXISTS idx_relations_valid_until ON relations(valid_until);
 
 -- 来源文档表
 CREATE TABLE IF NOT EXISTS documents (
@@ -118,6 +124,12 @@ DEFAULT_RELATION_TYPES = [
     ("relates_to", "关联", "A 和 B 有关联（通用关系）", 1, 0, None, None, None),
 ]
 
+# 允许使用的关系类型白名单（禁止新建/使用集合之外的关系类型）
+# 由 DEFAULT_RELATION_TYPES 派生，供 modify_ontology / ingest_document 工具层校验复用
+WHITELIST_RELATION_TYPES = frozenset(
+    rt[0] for rt in DEFAULT_RELATION_TYPES
+)
+
 
 def get_db_path():
     """获取数据库文件路径。可通过环境变量覆盖。"""
@@ -158,4 +170,42 @@ def get_connection(db_path=None):
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # 自动迁移：确保 relations 表包含时间字段（幂等）
+    _migrate_relation_time_fields(conn)
+    # 自动迁移：确保 entities 表包含 available_from 字段（幂等）
+    _migrate_entity_time_fields(conn)
+    # 自动迁移：确保 relation_types 表包含 inverse_of/domain_type/range_type 字段（幂等）
+    _migrate_relation_type_fields(conn)
     return conn
+
+
+def _migrate_relation_time_fields(conn):
+    """自动迁移 relations 表，补充 valid_from / valid_until 字段（幂等）。委托给 Istaroth。"""
+    from .Istaroth import migrate_time_fields
+    migrate_time_fields(conn)
+
+
+def _migrate_entity_time_fields(conn):
+    """自动迁移 entities 表，补充 available_from 字段（幂等）。委托给 Istaroth。"""
+    from .Istaroth import migrate_time_fields
+    migrate_time_fields(conn)
+
+
+def _migrate_relation_type_fields(conn):
+    """自动迁移 relation_types 表，补充 inverse_of/domain_type/range_type 字段（幂等）。"""
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(relation_types)").fetchall()}
+        changed = False
+        if "inverse_of" not in cols:
+            conn.execute("ALTER TABLE relation_types ADD COLUMN inverse_of TEXT REFERENCES relation_types(id)")
+            changed = True
+        if "domain_type" not in cols:
+            conn.execute("ALTER TABLE relation_types ADD COLUMN domain_type TEXT")
+            changed = True
+        if "range_type" not in cols:
+            conn.execute("ALTER TABLE relation_types ADD COLUMN range_type TEXT")
+            changed = True
+        if changed:
+            conn.commit()
+    except Exception:
+        pass

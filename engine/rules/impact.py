@@ -11,6 +11,7 @@ from collections import deque
 from engine.core import Rule
 from engine.result import InferenceResult
 from models.schema import get_connection
+from models.Istaroth import time_filter_sql
 
 
 class ImpactAnalysisRule(Rule):
@@ -42,9 +43,12 @@ class ImpactAnalysisRule(Rule):
         conn.close()
         return row["cnt"] > 0
 
-    def apply(self, entity_ids, db_path=None):
+    def apply(self, entity_ids, db_path=None, include_future=False, include_expired=False):
         conn = get_connection(db_path)
         results = []
+
+        # 时间过滤条件（由 Istaroth 统一生成）
+        time_sql, time_params = time_filter_sql("r", include_future, include_expired)
 
         for eid in entity_ids:
             visited = {eid}
@@ -66,8 +70,8 @@ class ImpactAnalysisRule(Rule):
                        JOIN entities e ON r.target_id = e.id
                        WHERE r.source_id = ?
                          AND r.type_id IN ({f_placeholders})
-                         AND e.status = 'active'""",
-                    [current] + self.FORWARD_TYPES
+                         AND e.status = 'active'{time_sql}""",
+                    [current] + self.FORWARD_TYPES + time_params
                 ).fetchall()
 
                 for row in rows:
@@ -96,8 +100,8 @@ class ImpactAnalysisRule(Rule):
                        JOIN entities e ON r.source_id = e.id
                        WHERE r.target_id = ?
                          AND r.type_id IN ({r_placeholders})
-                         AND e.status = 'active'""",
-                    [current] + self.REVERSE_TYPES
+                         AND e.status = 'active'{time_sql}""",
+                    [current] + self.REVERSE_TYPES + time_params
                 ).fetchall()
 
                 for row in rows:
@@ -129,8 +133,8 @@ class ImpactAnalysisRule(Rule):
                          (CASE WHEN r.source_id = ? THEN r.target_id ELSE r.source_id END) = e.id
                        WHERE (r.source_id = ? OR r.target_id = ?)
                          AND r.type_id IN ({b_placeholders})
-                         AND e.status = 'active'""",
-                    [current, current, current, current] + self.BIDIRECTIONAL_TYPES
+                         AND e.status = 'active'{time_sql}""",
+                    [current, current, current, current] + self.BIDIRECTIONAL_TYPES + time_params
                 ).fetchall()
 
                 for row in rows:

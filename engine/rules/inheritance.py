@@ -8,6 +8,7 @@
 from engine.core import Rule
 from engine.result import InferenceResult
 from models.schema import get_connection
+from models.Istaroth import time_filter_sql
 
 
 class InheritanceRule(Rule):
@@ -32,9 +33,12 @@ class InheritanceRule(Rule):
         conn.close()
         return row["cnt"] > 0
 
-    def apply(self, entity_ids, db_path=None):
+    def apply(self, entity_ids, db_path=None, include_future=False, include_expired=False):
         conn = get_connection(db_path)
         results = []
+
+        # 时间过滤条件（由 Istaroth 统一生成）
+        time_sql, time_params = time_filter_sql("r", include_future, include_expired)
 
         for eid in entity_ids:
             entity = conn.execute(
@@ -69,13 +73,13 @@ class InheritanceRule(Rule):
             # 3. 如果兄弟实体有共同的关系模式，推理当前实体可能也有类似关系
             for sibling in siblings:
                 sibling_relations = conn.execute(
-                    """SELECT r.type_id, r.target_id, r.confidence,
+                    f"""SELECT r.type_id, r.target_id, r.confidence,
                               e.name AS target_name
                        FROM relations r
                        JOIN entities e ON r.target_id = e.id
                        WHERE r.source_id = ?
-                       AND e.status = 'active'""",
-                    (sibling["id"],)
+                       AND e.status = 'active'{time_sql}""",
+                    [sibling["id"]] + time_params
                 ).fetchall()
 
                 for rel in sibling_relations:
