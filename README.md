@@ -171,7 +171,6 @@ claude mcp add paimon \
 | `ingest_document` | 从文本/Markdown 文档抽取实体和关系，写入 Ontology 数据库 |
 | `modify_ontology` | 根据自然语言描述修改已有 Ontology（增/删/改实体和关系） |
 | `delete_ontology_entity` | 根据实体 ID 或名称直接删除实体及其所有关联关系 |
-| `manage_schema` | 管理本体 Schema 层（查看/修改实体类型、关系类型语义） |
 
 ### 5 个工具详解
 
