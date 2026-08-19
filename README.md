@@ -47,7 +47,7 @@ P.A.I.M.O.N：PRD → 本体抽取 → 规则推理 → 增强版 PRD（含完�
 | **类型继承** | 兄弟实体共性关系推导 | 同类型的实体共享关系 |
 | **冲突检测** | 4 种矛盾模式检测 | 依赖且冲突 / 循环包含 |
 
-**效果**：一次 PRD 解析仅需 2 次 LLM 调用（抽取与融合），其余全部由确定性规则引擎完成，可产出 **67 条以上**推理结果，显著增强 PRD 的信息量。
+**效果**：一次 PRD 解析仅需 2 次 LLM 调用（抽取与融合），其余全部由确定性规则引擎完成，可产出大量推理结果补充进原有文本中，显著增强 PRD 的信息量。
 
 ### 🛡️ 一致性检查器：维护本体健康
 
@@ -96,9 +96,13 @@ cd P.A.I.M.O.N/web
 python3 app.py
 ```
 
-默认在 `http://localhost:5258` 访问。
+默认在本地 `http://localhost:5258` 访问。
 前端看板可以观察目前已有的本体中每个实体之间的关系，以及每个实体的详细信息。
 同时还可以配置 LLM API，LLM 能力将用于解析 PRD 和查询本体。
+
+<img width="3840" height="1866" alt="image" src="https://github.com/user-attachments/assets/224dcbb5-73cd-4515-aa50-514d6727dd93" />
+
+
 
 ### 3. 配置 LLM API
 
@@ -158,7 +162,7 @@ claude mcp add paimon \
 }
 ```
 
-配置后，Coding Agent 将能使用以下工具（共 5 个，均已封装为 Trae Skill）：
+配置后，Coding Agent 将能使用以下工具（共 5 个，均已封装为Skill）：
 
 | 工具 | 说明 |
 |------|------|
@@ -205,8 +209,9 @@ claude mcp add paimon \
 
 直接根据实体 ID 或名称删除实体及其所有关联关系。操作不可逆，需谨慎使用。
 
-## Trae Skills（推荐用法）
+## 推荐用法
 
+以Trae配置方式为例，其他Agent大同小异。
 项目已在 `skills/` 下封装了 5 个 Skill，Coding Agent 可直接根据意图调用对应 Skill，自动完成与 MCP 的交互。
 
 | Skill | 触发场景 | 对应 MCP 工具 |
